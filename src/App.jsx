@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, FileText, CheckCircle, XCircle, Download, ExternalLink, AlertCircle, LogOut, User, Trash2,  Settings, Home, DollarSign, ArrowRight, ChevronDown, ChevronUp, Lock, Plus, Shield } from 'lucide-react';
+import { Upload, FileText, CheckCircle, XCircle, Download, ExternalLink, AlertCircle, LogOut, User, Trash2,  Settings, Home, DollarSign, ArrowRight, ChevronDown, ChevronUp, Lock, Plus, Shield, Mail } from 'lucide-react';
 
 const PERMISSIONS = {
   invoices: {
@@ -164,6 +164,12 @@ const [mockUsers, setMockUsers] = useState([
 const [roles, setRoles] = useState(defaultRoles);
 const [editingRole, setEditingRole] = useState(null);
 const [newRoleName, setNewRoleName] = useState('');
+const [emailTemplates, setEmailTemplates] = useState([
+{ id: 1, key: 'new_spend_approval', name: 'New Spend Approval — Notify Approver', subject: 'New Spend Approval Request: {{spend_ref}} — {{spend_title}}', body: 'Dear {{approver_name}},\n\nA new spend approval request has been submitted and requires your review.\n\nReference: {{spend_ref}}\nTitle: {{spend_title}}\nVendor: {{vendor}}\nAmount: {{currency}} {{amount}}\nSubmitted by: {{submitted_by}}\nDate submitted: {{submitted_date}}\n\nPlease log in to review and action this request.\n\nThank you.', active: true },
+{ id: 2, key: 'spend_approval_changed', name: 'Spend Approval Updated — Notify Approver', subject: 'Spend Approval Updated: {{spend_ref}} — {{spend_title}}', body: 'Dear {{approver_name}},\n\nA spend approval you are assigned to review has been updated.\n\nReference: {{spend_ref}}\nTitle: {{spend_title}}\nVendor: {{vendor}}\nAmount: {{currency}} {{amount}}\nUpdated by: {{updated_by}}\nDate updated: {{updated_date}}\n\nPlease log in to review the changes.\n\nThank you.', active: true },
+{ id: 3, key: 'spend_approval_decision', name: 'Spend Approval Decision — Notify Submitter', subject: 'Spend Approval {{decision}}: {{spend_ref}} — {{spend_title}}', body: 'Dear {{submitted_by}},\n\nYour spend approval request has been {{decision}}.\n\nReference: {{spend_ref}}\nTitle: {{spend_title}}\nVendor: {{vendor}}\nAmount: {{currency}} {{amount}}\nDecision: {{decision}}\nDecision date: {{decision_date}}\nDecided by: {{approver_name}}\n\nPlease log in to view the full details.\n\nThank you.', active: true }
+]);
+const [editTemplateId, setEditTemplateId] = useState(null);
 const [selectedFiles, setSelectedFiles] = useState([]);
 const [extractedDataBatch, setExtractedDataBatch] = useState([]);
 const [isProcessing, setIsProcessing] = useState(false);
@@ -701,7 +707,7 @@ const prevKey = i>0 ? getSpendGroupKey(arr[i-1]) : null;
 const showHeader = spendGroupBy !== 'none' && groupKey !== prevKey;
 return (<React.Fragment key={s.id}> {showHeader && <tr className="bg-gray-50"><td colSpan={99} className="px-4 py-2 text-sm font-semibold text-gray-700">{formatGroupHeader(groupKey)}</td></tr>}
 <tr className="border-b border-gray-100 hover:bg-gray-50"> {canApproveSpend() && <td className="px-4 py-3">{(s.status==='Pending' || s.status==='Escalated') ? <input type="checkbox" checked={selectedSpendIds.includes(s.id)} onChange={() => toggleSpendSelect(s.id)} className="w-4 h-4 text-green-600 rounded"/> : null}</td>}
-{spendVisibleCols.ref && <td className="px-4 py-3 text-sm font-mono text-indigo-600 font-semibold">{s.ref}</td>}
+{spendVisibleCols.ref && <td className="px-4 py-3 text-sm font-mono font-semibold"><button onClick={() => setSelectedSpend(s)} className="text-indigo-600 hover:text-indigo-800 underline">{s.ref}</button></td>}
 {spendVisibleCols.title && <td className="px-4 py-3 text-sm font-medium"><button onClick={() => setSelectedSpend(s)} className="text-indigo-600 hover:text-indigo-800 hover:underline text-left font-medium">{s.title}</button>{s.timeSensitive && <span className="ml-2 px-1.5 py-0.5 bg-orange-100 text-orange-700 text-xs rounded">Urgent</span>}</td>}
 {spendVisibleCols.vendor && <td className={_td}>{s.vendor}</td>}
 {spendVisibleCols.amount && <td className="px-4 py-3 text-sm text-gray-800 font-semibold">{fmtEur(s.amount, s.currency)}{s.currency !== 'EUR' && <div className="text-xs text-gray-400 font-normal">{s.currency} {Number(s.amount).toLocaleString()}</div>}</td>}
@@ -758,7 +764,8 @@ onClick={inviteUser} className="flex-1 px-4 py-2 bg-indigo-600 text-white rounde
 <nav className="flex space-x-8"> <button
 onClick={() => setSettingsTab('users')} className={`py-4 px-1 border-b-2 font-medium text-sm ${ settingsTab === 'users' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300' } ${!canManagePermissions() ? 'hidden' : ''}`} > <div className={_fx}> <User className="w-4 h-4"/> <span>Users</span></div></button> <button
 onClick={() => setSettingsTab('atoms')} className={`py-4 px-1 border-b-2 font-medium text-sm ${ settingsTab === 'atoms' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300' }`} > <div className={_fx}> <Settings className="w-4 h-4"/> <span>Lookups</span></div></button> <button
-onClick={() => setSettingsTab('audit')} className={`py-4 px-1 border-b-2 font-medium text-sm ${ settingsTab === 'audit' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300' }`} > <div className={_fx}> <FileText className="w-4 h-4"/> <span>Audit Log</span></div></button> <button
+onClick={() => setSettingsTab('audit')} className={`py-4 px-1 border-b-2 font-medium text-sm ${ settingsTab === 'audit' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300' }`} > <div className={_fx}> <FileText className="w-4 h-4"/> <span>Audit Log</span></div></button> {hasPermission('settings.manage_users') && <button
+onClick={() => setSettingsTab('emails')} className={`py-4 px-1 border-b-2 font-medium text-sm ${ settingsTab === 'emails' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300' }`} > <div className={_fx}> <Mail className="w-4 h-4"/> <span>Email Templates</span></div></button>} <button
 onClick={() => setSettingsTab('api')} className={`py-4 px-1 border-b-2 font-medium text-sm ${ settingsTab === 'api' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300' }`} > <div className={_fx}> <ExternalLink className="w-4 h-4"/> <span>API</span></div></button> {hasPermission('settings.manage_users') && <button
 onClick={() => setSettingsTab('roles')} className={`py-4 px-1 border-b-2 font-medium text-sm ${ settingsTab === 'roles' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300' }`} > <div className={_fx}> <Shield className="w-4 h-4"/> <span>Roles & Permissions</span></div></button>} </nav></div> {settingsTab === 'users' && ( <div> <div className="mb-6 flex items-center justify-between"> <div> <h2 className="text-xl font-bold text-gray-800 mb-2">User Management</h2>
 <p className="text-gray-600">Manage users, roles, and access levels</p></div> {canManagePermissions() && ( <button
@@ -877,6 +884,60 @@ a.download = `audit_log_${new Date().toISOString().split('T')[0]}.csv`; a.click(
 </div>
 </div>
 </div>)}
+{settingsTab === 'emails' && (<div>
+<div className="mb-6"><h2 className="text-xl font-bold text-gray-800 mb-2">Email Templates</h2><p className="text-gray-600">Configure notification email templates for the spend approval workflow</p></div>
+<div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+<h3 className="text-sm font-semibold text-blue-900 mb-2">Available Placeholders</h3>
+<div className="flex flex-wrap gap-2">
+{['{{approver_name}}','{{submitted_by}}','{{spend_ref}}','{{spend_title}}','{{vendor}}','{{currency}}','{{amount}}','{{submitted_date}}','{{updated_by}}','{{updated_date}}','{{decision}}','{{decision_date}}'].map(p => (
+<code key={p} className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded font-mono">{p}</code>
+))}
+</div>
+<p className="text-xs text-blue-700 mt-2">Use these placeholders in your subject and body. They will be replaced with actual values when the email is sent.</p>
+</div>
+<div className="space-y-4">
+{emailTemplates.map(tpl => {
+const isEditing = editTemplateId === tpl.id;
+return (
+<div key={tpl.id} className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+<div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+<div className="flex items-center space-x-3">
+<Mail className="w-5 h-5 text-indigo-500"/>
+<h3 className="text-sm font-semibold text-gray-800">{tpl.name}</h3>
+</div>
+<div className="flex items-center space-x-3">
+<span className={`px-2 py-0.5 text-xs font-semibold rounded-full ${tpl.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>{tpl.active ? 'Active' : 'Inactive'}</span>
+{!isEditing && <button onClick={() => setEditTemplateId(tpl.id)} className="text-xs text-indigo-600 hover:text-indigo-800 font-medium">Edit</button>}
+</div>
+</div>
+{!isEditing ? (
+<div className="px-6 py-3">
+<p className="text-sm text-gray-600"><span className="font-medium text-gray-700">Subject:</span> {tpl.subject}</p>
+</div>
+) : (
+<div className="px-6 py-4 space-y-4 bg-gray-50">
+<div>
+<label className={_lb}>Subject</label>
+<input type="text" value={tpl.subject} onChange={e => setEmailTemplates(prev => prev.map(t => t.id === tpl.id ? {...t, subject: e.target.value} : t))} className={`w-full ${_i}`}/>
+</div>
+<div>
+<label className={_lb}>Body</label>
+<textarea value={tpl.body} onChange={e => setEmailTemplates(prev => prev.map(t => t.id === tpl.id ? {...t, body: e.target.value} : t))} rows={10} className={`w-full ${_i} font-mono text-sm`}/>
+</div>
+<div className="flex items-center justify-between pt-2">
+<button onClick={() => { setEmailTemplates(prev => prev.map(t => t.id === tpl.id ? {...t, active: !t.active} : t)); setAuditLog(prev => [...prev, { id: Date.now()+Math.random(), action: tpl.active ? 'EMAIL_TEMPLATE_DEACTIVATED' : 'EMAIL_TEMPLATE_ACTIVATED', details: `Email template "${tpl.name}" ${tpl.active ? 'deactivated' : 'activated'}`, performedBy: user.name, performedAt: new Date().toISOString() }]); }} className={`text-sm font-medium px-3 py-1.5 rounded-lg ${tpl.active ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200' : 'bg-green-100 text-green-700 hover:bg-green-200'}`}>{tpl.active ? 'Deactivate' : 'Activate'}</button>
+<div className="flex items-center space-x-2">
+<button onClick={() => setEditTemplateId(null)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Cancel</button>
+<button onClick={() => { setEditTemplateId(null); setAuditLog(prev => [...prev, { id: Date.now()+Math.random(), action: 'EMAIL_TEMPLATE_UPDATED', details: `Email template "${tpl.name}" updated`, performedBy: user.name, performedAt: new Date().toISOString() }]); }} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-semibold">Save</button>
+</div>
+</div>
+</div>
+)}
+</div>
+);
+})}
+</div>
+</div>)}
 {settingsTab === 'roles' && (<div>
 <div className="mb-6"><h2 className="text-xl font-bold text-gray-800 mb-2">Roles & Permissions</h2><p className="text-gray-600">Manage roles and their granular permissions</p></div>
 <div className="flex items-center space-x-3 mb-6">
@@ -926,7 +987,7 @@ onClick={() => setSelectedInvoice(null)} className="flex items-center space-x-2 
 <label className="text-sm text-gray-600">Tax Amount</label> <p className="text-lg font-semibold text-gray-800">{currencySymbol(invoice.currency)}{invoice.taxAmount}{invoice.vatRate != null && invoice.vatRate > 0 ? ` (${(invoice.vatRate * 100).toFixed(0)}%)` : ''}</p></div> <div className="col-span-2"> <label className="text-sm text-gray-600">Total Amount</label> <p className="text-2xl font-bold text-green-600">{currencySymbol(invoice.currency)}{invoice.totalAmount || (parseFloat(invoice.amount) + parseFloat(invoice.taxAmount)).toFixed(2)}</p></div> {invoice.paymentTerms && (<div> <label className="text-sm text-gray-600">Payment Terms</label> <p className="text-lg font-semibold text-gray-800">{invoice.paymentTerms}</p></div>)} {invoice.currency && (<div> <label className="text-sm text-gray-600">Currency</label> <p className="text-lg font-semibold text-gray-800">{invoice.currency}</p></div>)} <div className="col-span-2"> <label className="text-sm text-gray-600">Description</label> <p className="text-gray-800">{invoice.description}</p></div></div></div>
 {invoice.supplier && (invoice.supplier.company || invoice.supplier.address || invoice.supplier.vat_number) && (<div className={_cd}> <h2 className={_h2}>Supplier Details</h2> <div className="grid grid-cols-2 gap-4"> {invoice.supplier.company && (<div className="col-span-2"> <label className="text-sm text-gray-600">Company</label> <p className="text-lg font-semibold text-gray-800">{invoice.supplier.company}</p></div>)} {invoice.supplier.address && (<div className="col-span-2"> <label className="text-sm text-gray-600">Address</label> <p className="text-sm text-gray-800">{invoice.supplier.address}</p></div>)} {invoice.supplier.vat_number && (<div> <label className="text-sm text-gray-600">VAT Number</label> <p className="text-sm font-semibold text-gray-800">{invoice.supplier.vat_number}</p></div>)} {invoice.supplier.phone && (<div> <label className="text-sm text-gray-600">Phone</label> <p className="text-sm text-gray-800">{invoice.supplier.phone}</p></div>)} {invoice.supplier.email && (<div> <label className="text-sm text-gray-600">Email</label> <p className="text-sm text-gray-800">{invoice.supplier.email}</p></div>)} {invoice.supplier.website && (<div> <label className="text-sm text-gray-600">Website</label> <p className="text-sm text-gray-800">{invoice.supplier.website}</p></div>)}</div></div>)}
 {invoice.customer && (invoice.customer.company || invoice.customer.address) && (<div className={_cd}> <h2 className={_h2}>Customer / Bill-to</h2> <div className="grid grid-cols-2 gap-4"> {invoice.customer.company && (<div className="col-span-2"> <label className="text-sm text-gray-600">Company</label> <p className="text-lg font-semibold text-gray-800">{invoice.customer.company}</p></div>)} {invoice.customer.attention && (<div className="col-span-2"> <label className="text-sm text-gray-600">Attention</label> <p className="text-sm text-gray-800">{invoice.customer.attention}</p></div>)} {invoice.customer.address && (<div className="col-span-2"> <label className="text-sm text-gray-600">Address</label> <p className="text-sm text-gray-800">{invoice.customer.address}</p></div>)} {invoice.customer.vat_number && (<div> <label className="text-sm text-gray-600">VAT Number</label> <p className="text-sm font-semibold text-gray-800">{invoice.customer.vat_number}</p></div>)}</div></div>)}
-<div className={_cd}> <h2 className={_h2}>Linked Spend Approval</h2> {invoice.spendApprovalId ? (() => { const sp = spendApprovals.find(s => s.id === invoice.spendApprovalId); return sp ? ( <div className="border border-indigo-200 bg-indigo-50 rounded-lg p-4"> <div className="flex items-center justify-between mb-2"><h3 className="font-semibold text-indigo-800">{sp.title}</h3><button onClick={() => unlinkInvoice(invoice.id)} className="text-xs text-red-600 hover:text-red-800 font-semibold">Unlink</button></div>
+<div className={_cd}> <h2 className={_h2}>Linked Spend Approval</h2> {invoice.spendApprovalId ? (() => { const sp = spendApprovals.find(s => s.id === invoice.spendApprovalId); return sp ? ( <div className="border border-indigo-200 bg-indigo-50 rounded-lg p-4"> <div className="flex items-center justify-between mb-2"><h3 className="font-semibold text-indigo-800"><button onClick={() => { setSelectedInvoice(null); setCurrentPage('spend-approval'); setSpendView('list'); setSelectedSpend(sp); }} className="hover:text-indigo-600 underline">{sp.ref} — {sp.title}</button></h3><button onClick={() => unlinkInvoice(invoice.id)} className="text-xs text-red-600 hover:text-red-800 font-semibold">Unlink</button></div>
 <div className="grid grid-cols-2 gap-2 text-sm"><div><span className="text-gray-500">Vendor:</span> <span className="text-gray-800">{sp.vendor}</span></div><div><span className="text-gray-500">Approved:</span> <span className="text-gray-800">{fmtEur(sp.amount, sp.currency)}</span></div><div><span className="text-gray-500">Category:</span> <span className="text-gray-800">{sp.category}</span></div><div><span className="text-gray-500">Remaining:</span> <span className={`font-semibold ${getSpendRemaining(sp) < 0 ? 'text-red-600' : 'text-green-600'}`}>€{toEur(getSpendRemaining(sp), sp.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div></div>
 </div> ) : <p className="text-sm text-gray-500">Linked spend approval not found.</p>; })() : ( <div><p className="text-sm text-gray-500 mb-3">No spend approval linked to this invoice.</p><label className="text-xs font-semibold text-gray-500 uppercase mb-1 block">Assign to Spend Approval</label><select defaultValue="" onChange={e => { if (e.target.value) { acceptMatch(invoice.id, Number(e.target.value)); setSelectedInvoice({...invoice, spendApprovalId: Number(e.target.value)}); } }} className={`w-full ${_g}`}><option value="" disabled>Select an approved spend approval...</option>{spendApprovals.filter(s => s.status === 'Approved' && (hasPermission('invoices.assign_all') || s.submittedBy === user.name)).map(s => (<option key={s.id} value={s.id}>{s.ref} — {s.title} — {s.vendor} ({fmtEur(s.amount, s.currency)})</option>))}</select></div>)}</div>
 {invoice.lineItems && invoice.lineItems.length > 0 && ( <div className={_cd}> <h2 className={_h2}>Line Items</h2> <div className="overflow-x-auto"> <table className="w-full"> <thead className="bg-gray-50"> <tr> {invoice.lineItems.some(li => li.category) && <th className="px-4 py-2 text-left text-sm font-semibold text-gray-700">Category</th>} <th className="px-4 py-2 text-left text-sm font-semibold text-gray-700">Description</th> <th className="px-4 py-2 text-right text-sm font-semibold text-gray-700">Quantity</th> <th className="px-4 py-2 text-right text-sm font-semibold text-gray-700">Unit Rate</th>
@@ -1017,7 +1078,7 @@ onClick={() => setSelectedInvoice(invoice)} className="text-indigo-600 hover:tex
 {visibleColumns.subtotal && ( <td className="px-4 py-3 text-sm text-right">{currencySymbol(invoice.currency)}{invoice.amount}</td>)}
 {visibleColumns.tax && ( <td className="px-4 py-3 text-sm text-right">{currencySymbol(invoice.currency)}{invoice.taxAmount}</td>)}
 {visibleColumns.total && ( <td className="px-4 py-3 text-sm text-right font-semibold">{currencySymbol(invoice.currency)}{invoice.totalAmount || (parseFloat(invoice.amount) + parseFloat(invoice.taxAmount)).toFixed(2)}</td>)}
-{visibleColumns.spendApproval && ( <td className="px-4 py-3 text-sm">{(() => { const sp = invoice.spendApprovalId ? spendApprovals.find(s => s.id === invoice.spendApprovalId) : null; return sp ? (<span className="font-medium text-indigo-600">{sp.ref}</span>) : (<span className="text-gray-400">—</span>); })()}</td>)}
+{visibleColumns.spendApproval && ( <td className="px-4 py-3 text-sm">{(() => { const sp = invoice.spendApprovalId ? spendApprovals.find(s => s.id === invoice.spendApprovalId) : null; return sp ? (<button onClick={(e) => { e.stopPropagation(); setCurrentPage('spend-approval'); setSpendView('list'); setSelectedSpend(sp); }} className="font-medium text-indigo-600 hover:text-indigo-800 underline">{sp.ref}</button>) : (<span className="text-gray-400">—</span>); })()}</td>)}
 {visibleColumns.date && ( <td className="px-4 py-3 text-sm">{invoice.date}</td>)}
 {visibleColumns.dueDate && ( <td className="px-4 py-3 text-sm">{invoice.dueDate}</td>)}
 {visibleColumns.file && ( <td className="px-4 py-3 text-sm"> {invoice.fileUrl ? (<div className="flex items-center space-x-2"
