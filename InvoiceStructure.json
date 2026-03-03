@@ -1,0 +1,47 @@
+{
+  "supplier": {
+    "company": "Huble Digital LTD",
+    "address": "123 Buckingham Palace Road, London SW1W 9SH, United Kingdom",
+    "vat_number": "GB142524830",
+    "website": "www.huble.com",
+    "phone": "+44 (0)20 7183 0288",
+    "email": "info@huble.com"
+  },
+  "customer": {
+    "company": "HUBEXO UK LIMITED",
+    "attention": "Purchase ledger",
+    "address": "The Old Post Office, St. Nicholas Street, Newcastle Upon Tyne, NE1 1RH, United Kingdom",
+    "vat_number": "GB302515451"
+  },
+  "invoice": {
+    "title": "Hubexo - Nordics - Flex Retainer 21hrs/week",
+    "invoice_number": "UK-16145",
+    "invoice_date": "2026-01-19",
+    "due_date": "2026-02-03",
+    "payment_terms": "15 days from invoice date",
+    "currency": "GBP",
+    "currency_symbol": "£"
+  },
+  "line_items": [
+    {
+      "category": "Top-up and on-site workshop",
+      "description": "Top-up hours and on-site workshops",
+      "quantity": 1,
+      "unit_rate": 23250.00,
+      "amount": 23250.00
+    }
+  ],
+  "totals": {
+    "subtotal": 23250.00,
+    "vat_rate": 0.20,
+    "vat_amount": 4650.00,
+    "total": 27900.00
+  },
+  "bank_details": {
+    "bank": "Barclays",
+    "account_number": "53500802",
+    "sort_code": "20-96-89",
+    "iban": "GB86BUKB20968953500802",
+    "swift_bic": "BUKBGB22"
+  }
+}
