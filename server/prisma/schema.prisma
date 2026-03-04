@@ -1,0 +1,215 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              Int      @id @default(autoincrement())
+  name            String
+  email           String   @unique
+  roleId          Int      @map("role_id")
+  status          String   @default("Pending")
+  approvalLimit   Decimal  @default(0) @map("approval_limit") @db.Decimal(12, 2)
+  isCeo           Boolean  @default(false) @map("is_ceo")
+  azureOid        String?  @unique @map("azure_oid")
+  azureTenantId   String?  @map("azure_tenant_id")
+  invitedBy       String?  @map("invited_by")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  role            Role     @relation(fields: [roleId], references: [id])
+  spendApprovals  SpendApproval[] @relation("ApproverApprovals")
+  auditLogs       AuditLog[]
+  functionApprovals Function[] @relation("FunctionApprover")
+
+  @@map("users")
+}
+
+model Role {
+  id          Int              @id @default(autoincrement())
+  name        String           @unique
+  isDefault   Boolean          @default(false) @map("is_default")
+  users       User[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          Int              @id @default(autoincrement())
+  key         String           @unique
+  description String
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       Int @map("role_id")
+  permissionId Int @map("permission_id")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model Invoice {
+  id              Int       @id @default(autoincrement())
+  invoiceNumber   String    @map("invoice_number")
+  vendor          String
+  date            String
+  dueDate         String    @map("due_date")
+  amount          Decimal   @db.Decimal(12, 2)
+  taxAmount       Decimal   @default(0) @map("tax_amount") @db.Decimal(12, 2)
+  department      String?
+  description     String?
+  submittedBy     String    @map("submitted_by")
+  submittedDate   DateTime  @default(now()) @map("submitted_date")
+  fileName        String?   @map("file_name")
+  fileUrl         String?   @map("file_url")
+  supplierJson    Json?     @map("supplier_json")
+  customerJson    Json?     @map("customer_json")
+  currency        String?
+  spendApprovalId Int?      @map("spend_approval_id")
+
+  spendApproval   SpendApproval? @relation(fields: [spendApprovalId], references: [id], onDelete: SetNull)
+  lineItems       InvoiceLineItem[]
+
+  @@map("invoices")
+}
+
+model InvoiceLineItem {
+  id          Int     @id @default(autoincrement())
+  invoiceId   Int     @map("invoice_id")
+  category    String?
+  description String?
+  quantity    Decimal @default(0) @db.Decimal(12, 4)
+  unitRate    Decimal @default(0) @map("unit_rate") @db.Decimal(12, 2)
+  amount      Decimal @default(0) @db.Decimal(12, 2)
+
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("invoice_line_items")
+}
+
+model SpendApproval {
+  id            Int       @id @default(autoincrement())
+  ref           String    @unique
+  department    String
+  title         String
+  currency      String
+  amount        Decimal   @db.Decimal(12, 2)
+  category      String
+  vendor        String
+  costCentre    String?   @map("cost_centre")
+  atom          String?
+  region        String?
+  project       String?
+  approverId    Int?      @map("approver_id")
+  status        String    @default("Pending")
+  submittedBy   String    @map("submitted_by")
+  submittedAt   DateTime  @default(now()) @map("submitted_at")
+  exceptional   String    @default("No")
+  timeSensitive Boolean   @default(false) @map("time_sensitive")
+  justification String?
+
+  approver      User?     @relation("ApproverApprovals", fields: [approverId], references: [id], onDelete: SetNull)
+  invoices      Invoice[]
+
+  @@map("spend_approvals")
+}
+
+model AuditLog {
+  id           Int      @id @default(autoincrement())
+  action       String
+  details      String
+  performedBy  String   @map("performed_by")
+  performedAt  DateTime @default(now()) @map("performed_at")
+  metadataJson Json?    @map("metadata_json")
+  userId       Int?     @map("user_id")
+
+  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+}
+
+model Atom {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  name   String
+  active Boolean @default(true)
+
+  @@map("atoms")
+}
+
+model CostCentre {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  name   String
+  active Boolean @default(true)
+
+  @@map("cost_centres")
+}
+
+model Region {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  name   String
+  active Boolean @default(true)
+
+  @@map("regions")
+}
+
+model Currency {
+  id              Int     @id @default(autoincrement())
+  code            String  @unique
+  name            String
+  exchangeRateToEur Decimal @default(1) @map("exchange_rate_to_eur") @db.Decimal(10, 6)
+  active          Boolean @default(true)
+
+  @@map("currencies")
+}
+
+model SpendCategory {
+  id     Int     @id @default(autoincrement())
+  name   String  @unique
+  active Boolean @default(true)
+
+  @@map("spend_categories")
+}
+
+model Function {
+  id         Int     @id @default(autoincrement())
+  name       String  @unique
+  approverId Int?    @map("approver_id")
+  active     Boolean @default(true)
+
+  approver   User?   @relation("FunctionApprover", fields: [approverId], references: [id], onDelete: SetNull)
+
+  @@map("functions")
+}
+
+model Project {
+  id          Int     @id @default(autoincrement())
+  name        String  @unique
+  description String?
+  active      Boolean @default(true)
+
+  @@map("projects")
+}
+
+model EmailTemplate {
+  id      Int     @id @default(autoincrement())
+  key     String  @unique
+  name    String
+  subject String
+  body    String
+  active  Boolean @default(true)
+
+  @@map("email_templates")
+}
