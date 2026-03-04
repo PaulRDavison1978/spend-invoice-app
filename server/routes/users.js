@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import prisma from '../lib/prisma.js';
 import { logAudit } from '../services/auditService.js';
+import { sendTemplateEmail } from '../services/emailService.js';
 
 const router = Router();
 
@@ -43,6 +44,13 @@ router.post('/api/users/invite', async (req, res, next) => {
 
     const performedBy = req.user?.name || 'System';
     await logAudit({ action: 'USER_INVITED', details: `Invited ${email} with role ${role.name}`, performedBy, userId: req.user?.id });
+
+    // Send welcome notification email (fire-and-forget)
+    sendTemplateEmail('user_invited', email, {
+      user_name: user.name,
+      invited_by: performedBy,
+      role_name: role.name,
+    }, { performedBy, userId: req.user?.id });
 
     res.status(201).json(user);
   } catch (err) { next(err); }

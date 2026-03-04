@@ -200,6 +200,12 @@ async function main() {
       subject: 'Spend Alert: {{spend_ref}} has reached {{threshold}} of approved amount',
       body: 'Dear {{approver_name}},\n\nThe spend approval {{spend_ref}} — "{{spend_title}}" has reached {{threshold}} of its approved amount.\n\nReference: {{spend_ref}}\nTitle: {{spend_title}}\nDepartment: {{department}}\nApproved amount: {{currency}} {{approved_amount}}\nTotal invoiced: {{currency}} {{total_invoiced}}\nThreshold: {{threshold}}\n\nPlease log in to review the linked invoices.\n\nThank you.',
     },
+    {
+      key: 'user_invited',
+      name: 'User Invited — Welcome Notification',
+      subject: 'You have been invited to SpendGuard',
+      body: 'Dear {{user_name}},\n\nYou have been invited to SpendGuard by {{invited_by}}.\n\nRole: {{role_name}}\n\nYou can sign in using your Microsoft account. No additional registration is required.\n\nThank you.',
+    },
   ];
   for (const t of emailTemplates) {
     await prisma.emailTemplate.upsert({ where: { key: t.key }, update: { name: t.name, subject: t.subject, body: t.body }, create: t });
