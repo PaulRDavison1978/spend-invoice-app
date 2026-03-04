@@ -1,5 +1,6 @@
 import prisma from '../lib/prisma.js';
 import { logAudit } from './auditService.js';
+import { sendTemplateEmail } from './emailService.js';
 
 /**
  * Check spend threshold after an invoice is linked/unlinked.
@@ -89,6 +90,23 @@ export async function checkSpendThreshold(spendApprovalId, performedBy, userId) 
       approvedAmountEur,
     },
   });
+
+  // Notify approver of threshold breach (fire-and-forget)
+  if (spend.approverId) {
+    const approver = await prisma.user.findUnique({ where: { id: spend.approverId } });
+    if (approver?.email) {
+      sendTemplateEmail('spend_limit_alert', approver.email, {
+        approver_name: approver.name,
+        spend_ref: spend.ref,
+        spend_title: spend.title,
+        department: spend.department || '',
+        currency: spend.currency || '',
+        approved_amount: String(approvedAmountEur.toFixed(2)),
+        total_invoiced: String(totalInvoicedEur.toFixed(2)),
+        threshold,
+      }, { performedBy, userId });
+    }
+  }
 
   return alert;
 }
