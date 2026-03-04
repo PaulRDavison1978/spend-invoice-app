@@ -45,6 +45,26 @@ const defaultRoles = [
   { id:'user',     name:'User',     isDefault:true, permissions:['invoices.view_own','invoices.assign_own','spend.create','spend.view_own'] },
 ];
 
+const usePersistedState = (key, defaultValue) => {
+  const keyRef = useRef(key);
+  const read = (k) => { try { const s = localStorage.getItem(k); return s ? JSON.parse(s) : defaultValue; } catch { return defaultValue; } };
+  const [state, setState] = useState(() => read(key));
+  useEffect(() => {
+    if (key !== keyRef.current) {
+      keyRef.current = key;
+      setState(read(key));
+    }
+  }, [key]);
+  const setPersistedState = useCallback((valOrFn) => {
+    setState(prev => {
+      const next = typeof valOrFn === 'function' ? valOrFn(prev) : valOrFn;
+      localStorage.setItem(keyRef.current, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+  return [state, setPersistedState];
+};
+
 const InvoiceWorkflowApp = () => { const _i = "px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500";
 const _g = "px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500";
 const _th = "px-4 py-3 text-sm font-semibold text-gray-700";
@@ -288,6 +308,7 @@ const [inviteRole, setInviteRole] = useState('User');
 const [showRemoveConfirmation, setShowRemoveConfirmation] = useState(false);
 const [userToRemove, setUserToRemove] = useState(null);
 const [showGdprModal, setShowGdprModal] = useState(false);
+const [showEscalationModal, setShowEscalationModal] = useState(null);
 const [userToAnonymize, setUserToAnonymize] = useState(null);
 const [gdprConfirmEmail, setGdprConfirmEmail] = useState('');
 const [auditSearchTerm, setAuditSearchTerm] = useState('');
@@ -303,7 +324,8 @@ const [newRoleName, setNewRoleName] = useState('');
 const [emailTemplates, setEmailTemplates] = useState([
 { id: 1, key: 'new_spend_approval', name: 'New Spend Approval — Notify Approver', subject: 'New Spend Approval Request: {{spend_ref}} — {{spend_title}}', body: 'Dear {{approver_name}},\n\nA new spend approval request has been submitted and requires your review.\n\nReference: {{spend_ref}}\nTitle: {{spend_title}}\nVendor: {{vendor}}\nAmount: {{currency}} {{amount}}\nSubmitted by: {{submitted_by}}\nDate submitted: {{submitted_date}}\n\nPlease log in to review and action this request.\n\nThank you.', active: true },
 { id: 2, key: 'spend_approval_changed', name: 'Spend Approval Updated — Notify Approver', subject: 'Spend Approval Updated: {{spend_ref}} — {{spend_title}}', body: 'Dear {{approver_name}},\n\nA spend approval you are assigned to review has been updated.\n\nReference: {{spend_ref}}\nTitle: {{spend_title}}\nVendor: {{vendor}}\nAmount: {{currency}} {{amount}}\nUpdated by: {{updated_by}}\nDate updated: {{updated_date}}\n\nPlease log in to review the changes.\n\nThank you.', active: true },
-{ id: 3, key: 'spend_approval_decision', name: 'Spend Approval Decision — Notify Submitter', subject: 'Spend Approval {{decision}}: {{spend_ref}} — {{spend_title}}', body: 'Dear {{submitted_by}},\n\nYour spend approval request has been {{decision}}.\n\nReference: {{spend_ref}}\nTitle: {{spend_title}}\nVendor: {{vendor}}\nAmount: {{currency}} {{amount}}\nDecision: {{decision}}\nDecision date: {{decision_date}}\nDecided by: {{approver_name}}\n\nPlease log in to view the full details.\n\nThank you.', active: true }
+{ id: 3, key: 'spend_approval_decision', name: 'Spend Approval Decision — Notify Submitter', subject: 'Spend Approval {{decision}}: {{spend_ref}} — {{spend_title}}', body: 'Dear {{submitted_by}},\n\nYour spend approval request has been {{decision}}.\n\nReference: {{spend_ref}}\nTitle: {{spend_title}}\nVendor: {{vendor}}\nAmount: {{currency}} {{amount}}\nDecision: {{decision}}\nDecision date: {{decision_date}}\nDecided by: {{approver_name}}\n\nPlease log in to view the full details.\n\nThank you.', active: true },
+{ id: 4, key: 'spend_limit_alert', name: 'Spend Approval Limit Alert — Notify Approver', subject: 'Spend Approval {{threshold}} Threshold Reached: {{spend_ref}} — {{spend_title}}', body: 'Dear {{approver_name}},\n\nThe invoiced amount for a spend approval you manage has reached the {{threshold}} threshold.\n\nReference: {{spend_ref}}\nTitle: {{spend_title}}\nVendor: {{vendor}}\nApproved Amount: {{currency}} {{amount}}\nTotal Invoiced: {{invoiced_amount}}\nRemaining: {{remaining_amount}}\n\nPlease log in to review the linked invoices.\n\nThank you.', active: true }
 ]);
 const [editTemplateId, setEditTemplateId] = useState(null);
 const [selectedFiles, setSelectedFiles] = useState([]);
@@ -312,22 +334,25 @@ const [isProcessing, setIsProcessing] = useState(false);
 const [processingProgress, setProcessingProgress] = useState({ current: 0, total: 0 });
 const [hoveredInvoice, setHoveredInvoice] = useState(null);
 const [showColumnSelector, setShowColumnSelector] = useState(false);
-const [visibleColumns, setVisibleColumns] = useState({ invoiceNumber: true, vendor: true, subtotal: true, tax: true, total: true, spendApproval: true, file: true, date: false, dueDate: false, submittedBy: false });
-const [groupBy, setGroupBy] = useState('none');
+const _uk = (s) => `viewPrefs_${user?.email || 'default'}_${s}`;
+const [visibleColumns, setVisibleColumns] = usePersistedState(_uk('inv_cols'), { invoiceNumber: true, vendor: true, subtotal: true, tax: true, total: true, spendApproval: true, file: true, date: false, dueDate: false, submittedBy: false });
+const [groupBy, setGroupBy] = usePersistedState(_uk('inv_group'), 'none');
 const [spendForm, setSpendForm] = useState({ cc:'', title:'', currency:'', approver:'', amount:'', category:'', atom:'', vendor:'', costCentre:'', region:'', project:'', timeSensitive:false, exceptional:'', justification:'', department:'', originInvoiceId: null });
 const [spendSubmitted, setSpendSubmitted] = useState(false);
 const [spendView, setSpendView] = useState('list');
+const [spendAlerts, setSpendAlerts] = useState([]);
+const dismissSpendAlert = (alertId) => setSpendAlerts(prev => prev.filter(a => a.id !== alertId));
 const [selectedSpend, setSelectedSpend] = useState(null);
 const [selectedSpendIds, setSelectedSpendIds] = useState([]);
 const [spendSearch, setSpendSearch] = useState('');
 const [showSpendFilterPanel, setShowSpendFilterPanel] = useState(false);
-const [spendFilters, setSpendFilters] = useState({ status:'all', vendor:'all', category:'all', department:'all', project:'all', dateFrom:'', dateTo:'', amountMin:'', amountMax:'', submittedBy:'all', approver:'all' });
+const [spendFilters, setSpendFilters] = usePersistedState(_uk('spend_filters'), { status:'all', vendor:'all', category:'all', department:'all', project:'all', dateFrom:'', dateTo:'', amountMin:'', amountMax:'', submittedBy:'all', approver:'all' });
 const updateSpendFilter = (k,v) => setSpendFilters(p => ({...p,[k]:v}));
 const clearSpendFilters = () => setSpendFilters({ status:'all', vendor:'all', category:'all', project:'all', dateFrom:'', dateTo:'', amountMin:'', amountMax:'', submittedBy:'all', approver:'all' });
 const getSpendFilterCount = () => { let c=0; if(spendFilters.status!=='all')c++; if(spendFilters.vendor!=='all')c++; if(spendFilters.category!=='all')c++; if(spendFilters.department!=='all')c++; if(spendFilters.project!=='all')c++; if(spendFilters.dateFrom)c++; if(spendFilters.dateTo)c++; if(spendFilters.amountMin)c++; if(spendFilters.amountMax)c++; if(spendFilters.submittedBy!=='all')c++; if(spendFilters.approver!=='all')c++; return c; };
-const [spendGroupBy, setSpendGroupBy] = useState('none');
+const [spendGroupBy, setSpendGroupBy] = usePersistedState(_uk('spend_group'), 'none');
 const [showSpendColSelector, setShowSpendColSelector] = useState(false);
-const [spendVisibleCols, setSpendVisibleCols] = useState({ ref:true, title:true, vendor:true, amount:true, invoiced:true, category:true, department:true, project:true, submittedBy:true, date:true, status:true, approver:true, region:false, costCentre:false, atom:false });
+const [spendVisibleCols, setSpendVisibleCols] = usePersistedState(_uk('spend_cols'), { ref:true, title:true, vendor:true, amount:true, invoiced:true, category:true, department:true, project:true, submittedBy:true, date:true, status:true, approver:true, region:false, costCentre:false, atom:false });
 const toggleSpendCol = (col) => setSpendVisibleCols(p => ({...p,[col]:!p[col]}));
 const [anthropicApiKey, setAnthropicApiKey] = useState(() => localStorage.getItem('anthropicApiKey') || '');
 const [apiKeyTestStatus, setApiKeyTestStatus] = useState(null);
@@ -345,15 +370,18 @@ spendApprovals.filter(sp => sp && sp.status === 'Approved' && (!isRestricted || 
 const saRef = (sp.ref||'').toUpperCase(); const spVendor = (sp.vendor||'').toLowerCase(); const spAmt = parseFloat(sp.amount)||0;
 const linkedInvs = invoices.filter(i => i.spendApprovalId === sp.id);
 const totalInvoiced = linkedInvs.reduce((sum,i) => sum + (parseFloat(i.amount)||0), 0);
+const spAmtEur = toEur(spAmt, sp.currency);
+const remaining = spAmtEur - linkedInvs.reduce((sum,i) => sum + toEur(invoiceTotal(i), i.currency||sp.currency), 0);
 unlinkedInvs.forEach(inv => { let score = 0; let reasons = [];
 const invDesc = ((inv.description||'') + ' ' + (inv.invoiceNumber||'')).toUpperCase();
 if (saRef && invDesc.includes(saRef)) { score += 60; reasons.push('SA reference match'); }
 const invVendor = (inv.vendor||'').toLowerCase();
 if (invVendor && spVendor && (invVendor.includes(spVendor) || spVendor.includes(invVendor))) { score += 30; reasons.push('Vendor match'); }
 else if (invVendor && spVendor) { const words = spVendor.split(/\s+/); if (words.some(w => w.length > 2 && invVendor.includes(w))) { score += 15; reasons.push('Partial vendor match'); } }
-const invAmt = parseFloat(inv.amount)||0;
-if (invAmt > 0 && spAmt > 0) { const diff = Math.abs(invAmt - spAmt) / spAmt; if (diff <= 0.1) { score += 20; reasons.push(`Amount ±${(diff*100).toFixed(0)}%`); } }
-if (score >= 15) suggestions.push({ invoiceId: inv.id, invoiceNumber: inv.invoiceNumber||'', invoiceVendor: inv.vendor||'', invoiceAmount: inv.amount||'0', invoiceDate: inv.date||'', invoiceDueDate: inv.dueDate||'', invoiceDescription: inv.description||'', invoiceSubmittedBy: inv.submittedBy||'', score, reasons }); });
+const invTotalEur = toEur(invoiceTotal(inv), inv.currency||sp.currency);
+if (invTotalEur > 0 && spAmtEur > 0) { const diff = Math.abs(invTotalEur - spAmtEur) / spAmtEur; if (diff <= 0.1) { score += 20; reasons.push(`Amount ±${(diff*100).toFixed(0)}%`); } }
+if (remaining <= 0 && score < 60) { score = 0; }
+if (score >= 15) suggestions.push({ invoiceId: inv.id, invoiceNumber: inv.invoiceNumber||'', invoiceVendor: inv.vendor||'', invoiceAmount: inv.amount||'0', invoiceCurrency: inv.currency||sp.currency||'', invoiceDate: inv.date||'', invoiceDueDate: inv.dueDate||'', invoiceDescription: inv.description||'', invoiceSubmittedBy: inv.submittedBy||'', score, reasons }); });
 if (suggestions.length > 0) results.push({ spendId: sp.id, spendRef: sp.ref||'', spendTitle: sp.title||'', spendVendor: sp.vendor||'', spendCurrency: sp.currency||'', spendAmount: sp.amount||'0', spendCategory: sp.category||'', spendRegion: sp.region||'', spendAtom: sp.atom||'', totalInvoiced, remaining: spAmt - totalInvoiced, linkedCount: linkedInvs.length, suggestions: suggestions.sort((a,b) => b.score - a.score) }); }); return results;};
 const runAutoMatch = () => { const results = findMatches();
 setPendingMatches(results);
@@ -362,6 +390,7 @@ const acceptMatch = (invoiceId, spendId) => { const inv = invoices.find(i => i.i
 if (!inv || !sp) return;
 if (!hasPermission('invoices.assign_all')) { if (inv.submittedBy !== user.name || sp.submittedBy !== user.name) { alert('You can only link invoices you uploaded to spend approvals you raised.'); return; } }
 setInvoices(prev => prev.map(i => i.id === invoiceId ? {...i, spendApprovalId: spendId, spendApprovalTitle: sp.title} : i));
+checkSpendThreshold(spendId, toEur(invoiceTotal(inv), inv.currency||sp.currency));
 setAuditLog(prev => [...prev, { id:Date.now()+Math.random(), action:'INVOICE_MATCHED', details:`Invoice ${inv.invoiceNumber} matched to spend approval "${sp.title}" (€${toEur(sp.amount, sp.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})})`, performedBy:user.name, performedAt:new Date().toISOString() }]);
 setPendingMatches(prev => prev.map(m => m.spendId===spendId ? {...m, suggestions: m.suggestions.filter(s=>s.invoiceId!==invoiceId)} : m).filter(m=>m.suggestions.length>0));};
 const dismissSpendMatch = (spendId) => { setPendingMatches(prev => prev.filter(m => m.spendId !== spendId)); };
@@ -371,6 +400,20 @@ setAuditLog(prev => [...prev, { id:Date.now(), action:'INVOICE_UNLINKED', detail
 const getLinkedInvoices = (spendId) => invoices.filter(i => i.spendApprovalId === spendId);
 const invoiceTotal = (i) => (parseFloat(i.totalAmount) || ((parseFloat(i.amount)||0) + (parseFloat(i.taxAmount)||0)));
 const getSpendRemaining = (sp) => { const linked = getLinkedInvoices(sp.id); const totalEur = linked.reduce((sum,i) => sum + toEur(invoiceTotal(i), i.currency||sp.currency), 0); return toEur(parseFloat(sp.amount)||0, sp.currency) - totalEur; };
+const checkSpendThreshold = (spendId, newInvoiceAmountEur) => { const sp = spendApprovals.find(s => s.id === spendId); if (!sp) return;
+const approvedEur = toEur(parseFloat(sp.amount)||0, sp.currency);
+if (approvedEur <= 0) return;
+const linked = getLinkedInvoices(sp.id);
+const previousTotalEur = linked.reduce((sum,i) => sum + toEur(invoiceTotal(i), i.currency||sp.currency), 0);
+const newTotalEur = previousTotalEur + newInvoiceAmountEur;
+const prevRatio = previousTotalEur / approvedEur;
+const newRatio = newTotalEur / approvedEur;
+const crossed = (prevRatio < 1.0 && newRatio >= 1.0) ? '100%' : (prevRatio < 0.8 && newRatio >= 0.8) ? '80%' : null;
+if (crossed) {
+const alertObj = { id: Date.now() + Math.random(), spendId: sp.id, spendRef: sp.ref, spendTitle: sp.title, approver: sp.approver, department: sp.department, threshold: crossed, totalInvoiced: newTotalEur, approvedAmount: approvedEur, remaining: approvedEur - newTotalEur, createdAt: new Date().toISOString() };
+setSpendAlerts(prev => { const without = prev.filter(a => a.spendId !== sp.id); return [...without, alertObj]; });
+setAuditLog(prev => [...prev, { id: Date.now()+Math.random(), action: 'SPEND_THRESHOLD_ALERT', details: `Spend approval "${sp.title}" (${sp.ref}) reached ${crossed} threshold — Invoiced: €${newTotalEur.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} of €${approvedEur.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`, performedBy: user.name, performedAt: new Date().toISOString() }]);
+}};
 const [spendApprovals, setSpendApprovals] = useState([
 { id:1, ref:'SA-0001-ENG-CC200-UK', department:'Engineering', title:'Adobe Creative Cloud License', currency:'GBP', amount:'2400', category:'Software', vendor:'Adobe Inc.', approver:'Bob Johnson', costCentre:'CC200', atom:'ENG', region:'UK', project:'Project Alpha', status:'Approved', submittedBy:'Jane Smith', submittedAt:'2025-01-15T10:30:00Z', exceptional:'No', timeSensitive:false, justification:'10 seat renewal.' },
 { id:2, ref:'SA-0002-ENG-CC200-US', department:'Engineering', title:'AWS Infrastructure Q2', currency:'USD', amount:'15000', category:'Software', vendor:'Amazon Web Services', approver:'Bob Johnson', costCentre:'CC200', atom:'ENG', region:'US', project:'Project Alpha', status:'Pending', submittedBy:'John Doe', submittedAt:'2025-02-01T14:20:00Z', exceptional:'No', timeSensitive:true, justification:'March launch infra.' },
@@ -380,8 +423,25 @@ const [spendApprovals, setSpendApprovals] = useState([
 { id:6, ref:'SA-0006-ENG-CC200-US', department:'Engineering', title:'GCP Cloud Hosting Q1', currency:'USD', amount:'12000', category:'Software', vendor:'Google Cloud Platform', approver:'Bob Johnson', costCentre:'CC200', atom:'ENG', region:'US', project:'Project Alpha', status:'Approved', submittedBy:'John Doe', submittedAt:'2025-01-10T09:00:00Z', exceptional:'No', timeSensitive:false, justification:'GCP Q1.' },
 ]);
 const updateSpend = (k,v) => setSpendForm(p => ({...p,[k]:v}));
+useEffect(() => {
+if (!user) return;
+const alerts = [];
+spendApprovals.forEach(sp => {
+const approvedEur = toEur(parseFloat(sp.amount)||0, sp.currency);
+if (approvedEur <= 0) return;
+const linked = invoices.filter(i => i.spendApprovalId === sp.id);
+if (linked.length === 0) return;
+const totalEur = linked.reduce((sum,i) => sum + toEur(invoiceTotal(i), i.currency||sp.currency), 0);
+const ratio = totalEur / approvedEur;
+const label = ratio >= 1.0 ? '100%' : ratio >= 0.8 ? '80%' : null;
+if (label) {
+alerts.push({ id: Date.now() + Math.random(), spendId: sp.id, spendRef: sp.ref, spendTitle: sp.title, approver: sp.approver, department: sp.department, threshold: label, totalInvoiced: totalEur, approvedAmount: approvedEur, remaining: approvedEur - totalEur, createdAt: new Date().toISOString() });
+}
+});
+if (alerts.length > 0) setSpendAlerts(alerts);
+}, [user]);
 const [showFilterPanel, setShowFilterPanel] = useState(false);
-const [filters, setFilters] = useState({ vendor: 'all', dateFrom: '', dateTo: '', amountMin: '', amountMax: '', submittedBy: 'all', searchTerm: '' });
+const [filters, setFilters] = usePersistedState(_uk('inv_filters'), { vendor: 'all', dateFrom: '', dateTo: '', amountMin: '', amountMax: '', submittedBy: 'all', searchTerm: '' });
 const [showConfig, setShowConfig] = useState(false);
 const fileInputRef = useRef(null);
 const spendFileInputRef = useRef(null);
@@ -568,10 +628,8 @@ const extractedBatch = [];
 const errors = [];
 for (let i = 0; i < files.length; i++) { const file = files[i];
 setProcessingProgress({ current: i + 1, total: files.length });
-if (anthropicApiKey) { try { const data = await extractWithClaude(file, anthropicApiKey); extractedBatch.push(data); continue; } catch (err) { console.error(`Claude extraction failed for ${file.name}:`, err); errors.push({ fileName: file.name, error: err.message }); } }
-await new Promise(resolve => setTimeout(resolve, 1500)); const mockVendor = ['Adobe Inc.', 'Dell Technologies', 'Amazon Web Services', 'Acme Corp', 'TechSupplies Inc'][Math.floor(Math.random() * 5)]; const mockSubtotal = (Math.random() * 50000 + 1000).toFixed(2); const mockTax = (parseFloat(mockSubtotal) * 0.2).toFixed(2); const mockTotal = (parseFloat(mockSubtotal) + parseFloat(mockTax)).toFixed(2); const mockData = { invoiceNumber: `INV-${Math.floor(Math.random() * 10000)}`, vendor: mockVendor, date: new Date().toISOString().split('T')[0], dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], amount: mockSubtotal, taxAmount: mockTax, description: 'Professional services rendered', lineItems: [
-{ category: 'Consulting', description: 'Consulting Services', quantity: 40, rate: 150, amount: 6000 }, { category: 'Software', description: 'Software License', quantity: 1, rate: 2500, amount: 2500 } ], supplier: { company: mockVendor, address: '123 Business Ave, Suite 100, San Francisco, CA 94105', vat_number: 'US-123456789', website: 'www.example.com', phone: '+1 (555) 123-4567', email: 'billing@example.com' }, customer: { company: 'Our Company Ltd', attention: 'Accounts Payable', address: '456 Corporate Blvd, New York, NY 10001', vat_number: 'US-987654321' }, paymentTerms: '30 days from invoice date', currency: 'USD', vatRate: 0.20, subtotal: mockSubtotal, totalAmount: mockTotal, bankDetails: { bank: 'Chase Bank', account_number: '12345678', sort_code: '', iban: '', swift_bic: 'CHASUS33' }, fileName: file.name, fileUrl: URL.createObjectURL(file), fileType: file.type};
-extractedBatch.push(mockData);}
+if (!anthropicApiKey) { errors.push({ fileName: file.name, error: 'No API key configured. Please add your Claude API key in Settings to enable invoice extraction.' }); continue; }
+try { const data = await extractWithClaude(file, anthropicApiKey); extractedBatch.push(data); } catch (err) { console.error(`Claude extraction failed for ${file.name}:`, err); errors.push({ fileName: file.name, error: err.message }); }}
 setExtractionErrors(errors);
 setExtractedDataBatch(extractedBatch);
 setIsProcessing(false);};
@@ -660,7 +718,7 @@ const g = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
 return (<div className={_pg}><div className="max-w-5xl mx-auto"> <div className="bg-white rounded-lg shadow-lg p-6 mb-8"><div className={_fj}> <div className="flex items-center space-x-3"><Home className="w-8 h-8 text-indigo-600"/><div><h1 className="text-2xl font-bold text-gray-800">{g}, {user.name.split(' ')[0]}</h1><p className="text-sm text-gray-500">Dashboard</p></div></div>
 <div className="flex items-center space-x-4"><div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 rounded-lg"><User className="w-5 h-5 text-indigo-600"/><div className="text-sm"><p className="font-semibold text-gray-800">{user.name}</p><p className="text-xs text-gray-600">{user.role}</p></div></div> <button onClick={logout} className="flex items-center space-x-2 px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200"><LogOut className="w-4 h-4"/><span>Logout</span></button></div> </div></div> <div className={`grid grid-cols-1 ${(hasPermission('settings.view_lookups') || hasPermission('settings.manage_users')) ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-6`}>
 <button onClick={() => setCurrentPage('invoices')} className="bg-white rounded-xl shadow-lg hover:shadow-xl border-2 border-transparent hover:border-indigo-400 text-left p-8"><div className="flex items-center justify-center w-16 h-16 bg-indigo-100 rounded-2xl mb-6"><FileText className="w-8 h-8 text-indigo-600"/></div><h2 className="text-xl font-bold text-gray-800 mb-2">Invoices</h2><p className="text-gray-500 text-sm mb-6">{hasPermission('invoices.upload') ? 'Upload, extract, and manage invoices.' : 'View invoices you have uploaded.'}</p><div className="flex items-center text-indigo-600 font-semibold text-sm"><span>Open Invoices</span><ArrowRight className="w-4 h-4 ml-2"/></div></button>
-<button onClick={() => setCurrentPage('spend-approval')} className="bg-white rounded-xl shadow-lg hover:shadow-xl border-2 border-transparent hover:border-green-400 text-left p-8"><div className="flex items-center justify-center w-16 h-16 bg-green-100 rounded-2xl mb-6"><DollarSign className="w-8 h-8 text-green-600"/></div><h2 className="text-xl font-bold text-gray-800 mb-2">Spend Approvals</h2><p className="text-gray-500 text-sm mb-6">Create, track, and manage spend approval requests.</p><div className="flex items-center text-green-600 font-semibold text-sm"><span>Open Spend Approvals</span><ArrowRight className="w-4 h-4 ml-2"/></div></button>
+<button onClick={() => setCurrentPage('spend-approval')} className="bg-white rounded-xl shadow-lg hover:shadow-xl border-2 border-transparent hover:border-green-400 text-left p-8 relative"><div className="flex items-center justify-center w-16 h-16 bg-green-100 rounded-2xl mb-6"><DollarSign className="w-8 h-8 text-green-600"/></div>{spendAlerts.length > 0 && <span className="absolute top-4 right-4 bg-red-600 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center">{spendAlerts.length}</span>}<h2 className="text-xl font-bold text-gray-800 mb-2">Spend Approvals</h2><p className="text-gray-500 text-sm mb-6">Create, track, and manage spend approval requests.</p><div className="flex items-center text-green-600 font-semibold text-sm"><span>Open Spend Approvals</span><ArrowRight className="w-4 h-4 ml-2"/></div></button>
 {(hasPermission('settings.view_lookups') || hasPermission('settings.manage_users')) && (<button onClick={() => { setSettingsTab(hasPermission('settings.manage_users') ? 'users' : 'atoms'); setCurrentPage('settings'); }} className="bg-white rounded-xl shadow-lg hover:shadow-xl border-2 border-transparent hover:border-purple-400 text-left p-8"><div className="flex items-center justify-center w-16 h-16 bg-purple-100 rounded-2xl mb-6"><Settings className="w-8 h-8 text-purple-600"/></div><h2 className="text-xl font-bold text-gray-800 mb-2">Settings</h2><p className="text-gray-500 text-sm mb-6">{canManagePermissions() ? 'Manage users, roles, lookups, and audit logs.' : 'View lookups and audit logs.'}</p><div className="flex items-center text-purple-600 font-semibold text-sm"><span>Open Settings</span><ArrowRight className="w-4 h-4 ml-2"/></div></button>)}
 </div> </div></div>);}
 if (currentPage === 'spend-approval') { const sf = spendForm;
@@ -700,28 +758,27 @@ for (let i = 0; i < validFiles.length; i++) {
 const file = validFiles[i];
 setProcessingProgress({ current: i + 1, total: validFiles.length });
 let extracted = null;
-if (anthropicApiKey) { try { extracted = await extractWithClaude(file, anthropicApiKey); } catch (err) { console.error(`Claude extraction failed for ${file.name}:`, err); } }
-if (!extracted) { await new Promise(resolve => setTimeout(resolve, 1500)); }
-const invNum = extracted?.invoiceNumber || `INV-${Math.floor(Math.random() * 10000)}`;
-const mockSpendAmt = (Math.random() * 50000 + 1000).toFixed(2); const mockSpendTax = (parseFloat(mockSpendAmt) * 0.2).toFixed(2); const newInvoice = {
+if (!anthropicApiKey) { alert(`Extraction failed for ${file.name}: No API key configured. Please add your Claude API key in Settings.`); continue; }
+try { extracted = await extractWithClaude(file, anthropicApiKey); } catch (err) { console.error(`Claude extraction failed for ${file.name}:`, err); alert(`Extraction failed for ${file.name}: ${err.message}`); continue; }
+const newInvoice = {
 id: Date.now() + i,
-invoiceNumber: invNum,
-vendor: extracted?.vendor || spend.vendor,
-date: extracted?.date || new Date().toISOString().split('T')[0],
-dueDate: extracted?.dueDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-amount: extracted?.amount || mockSpendAmt,
-taxAmount: extracted?.taxAmount || mockSpendTax,
-department: extracted?.department || spend.department,
-description: extracted?.description || `Invoice for ${spend.title}`,
-lineItems: extracted?.lineItems?.length > 0 ? extracted.lineItems : [{ category: 'Services', description: 'Services', quantity: 1, rate: 1000, amount: 1000 }],
-supplier: extracted?.supplier || { company: spend.vendor, address: '', vat_number: '', website: '', phone: '', email: '' },
-customer: extracted?.customer || null,
-paymentTerms: extracted?.paymentTerms || '',
-currency: extracted?.currency || spend.currency || '',
-vatRate: extracted?.vatRate ?? 0.20,
-subtotal: extracted?.subtotal || mockSpendAmt,
-totalAmount: extracted?.totalAmount || (parseFloat(mockSpendAmt) + parseFloat(mockSpendTax)).toFixed(2),
-bankDetails: extracted?.bankDetails || null,
+invoiceNumber: extracted.invoiceNumber || `INV-${Date.now()}`,
+vendor: extracted.vendor || spend.vendor,
+date: extracted.date || new Date().toISOString().split('T')[0],
+dueDate: extracted.dueDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+amount: extracted.amount || '0.00',
+taxAmount: extracted.taxAmount || '0.00',
+department: extracted.department || spend.department,
+description: extracted.description || `Invoice for ${spend.title}`,
+lineItems: extracted.lineItems?.length > 0 ? extracted.lineItems : [],
+supplier: extracted.supplier || { company: spend.vendor, address: '', vat_number: '', website: '', phone: '', email: '' },
+customer: extracted.customer || null,
+paymentTerms: extracted.paymentTerms || '',
+currency: extracted.currency || spend.currency || '',
+vatRate: extracted.vatRate ?? 0.20,
+subtotal: extracted.subtotal || '0.00',
+totalAmount: extracted.totalAmount || '0.00',
+bankDetails: extracted.bankDetails || null,
 fileName: file.name,
 fileUrl: extracted?.fileUrl || URL.createObjectURL(file),
 fileType: file.type,
@@ -734,6 +791,7 @@ newInvoices.push(newInvoice);
 setAuditLog(prev => [...prev, { id: Date.now() + i + 2000, action: 'INVOICE_UPLOADED_TO_SPEND', details: `Invoice ${invNum} uploaded to spend approval "${spend.title}" (${spend.ref}) - Vendor: ${newInvoice.vendor}, Amount: ${newInvoice.amount}`, performedBy: user.name, performedAt: new Date().toISOString() }]);
 }
 setInvoices(prev => [...prev, ...newInvoices]);
+newInvoices.forEach(inv => { checkSpendThreshold(spend.id, toEur(invoiceTotal(inv), inv.currency||spend.currency)); });
 setIsProcessing(false);
 setProcessingProgress({ current: 0, total: 0 });
 if (spendFileInputRef.current) { spendFileInputRef.current.value = ''; }
@@ -744,14 +802,21 @@ const navBar = (<div className="bg-white rounded-lg shadow-lg p-6 mb-6"><div cla
 </div></div>);
 const getCeoUser = () => mockUsers.find(u => u.isCeo && u.status === 'Active');
 const updateSpendStatus = (id, status) => { const item = spendApprovals.find(s=>s.id===id);
-if (status === 'Approved' && item.status === 'Pending') { const approverUser = mockUsers.find(u => u.name === user.name);
-const limit = approverUser?.approvalLimit || 0; const amt = parseFloat(item.amount) || 0;
-if (limit > 0 && amt > limit && !approverUser?.isCeo) { const ceo = getCeoUser();
-setSpendApprovals(prev => prev.map(s => s.id===id ? {...s, status:'Escalated', approvedBy:user.name, escalatedTo:ceo?.name||'CEO', escalatedAt:new Date().toISOString()} : s));
-setAuditLog(prev => [...prev, { id:Date.now(), action:'SPEND_ESCALATED', details:`"${item.title}" (€${toEur(item.amount, item.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) exceeds ${user.name}'s limit (€${toEur(limit, item.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) - escalated to ${ceo?.name||'CEO'}`, performedBy:user.name, performedAt:new Date().toISOString() }]); return; }}
+if (status === 'Approved' && item.status === 'Pending') { const limit = user.approvalLimit || 0; const amt = toEur(item.amount, item.currency);
+if (limit > 0 && amt > limit && !user.isCeo) { setShowEscalationModal(item); return false; }}
 setSpendApprovals(prev => prev.map(s => s.id===id ? {...s, status, approvedBy:status==='Approved'||status==='Rejected'?user.name:s.approvedBy} : s));
 setAuditLog(prev => [...prev, { id:Date.now(), action:`SPEND_${status.toUpperCase()}`, details:`Spend request "${item.title}" (€${toEur(item.amount, item.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) ${status.toLowerCase()} - Vendor: ${item.vendor}`, performedBy:user.name, performedAt:new Date().toISOString() }]);
-if (status === 'Approved' && item.originInvoiceId) { const originInv = invoices.find(i => i.id === item.originInvoiceId); if (originInv && !originInv.spendApprovalId) { setInvoices(prev => prev.map(i => i.id === item.originInvoiceId ? {...i, spendApprovalId: id, spendApprovalTitle: item.title} : i)); setAuditLog(prev => [...prev, { id:Date.now()+1, action:'INVOICE_AUTO_LINKED', details:`Invoice ${originInv.invoiceNumber} auto-linked to spend approval "${item.title}" (€${toEur(item.amount, item.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) upon approval`, performedBy:user.name, performedAt:new Date().toISOString() }]); } }};
+if (status === 'Approved' && item.originInvoiceId) { const originInv = invoices.find(i => i.id === item.originInvoiceId); if (originInv && !originInv.spendApprovalId) { setInvoices(prev => prev.map(i => i.id === item.originInvoiceId ? {...i, spendApprovalId: id, spendApprovalTitle: item.title} : i)); checkSpendThreshold(id, toEur(invoiceTotal(originInv), originInv.currency||item.currency)); setAuditLog(prev => [...prev, { id:Date.now()+1, action:'INVOICE_AUTO_LINKED', details:`Invoice ${originInv.invoiceNumber} auto-linked to spend approval "${item.title}" (€${toEur(item.amount, item.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) upon approval`, performedBy:user.name, performedAt:new Date().toISOString() }]); } }};
+const confirmEscalation = () => { const item = showEscalationModal; if (!item) return; const ceo = getCeoUser();
+setSpendApprovals(prev => prev.map(s => s.id===item.id ? {...s, status:'Escalated', approvedBy:user.name, escalatedTo:ceo?.name||'CEO', escalatedAt:new Date().toISOString()} : s));
+const limit = user.approvalLimit || 0;
+setAuditLog(prev => [...prev, { id:Date.now(), action:'SPEND_ESCALATED', details:`"${item.title}" (€${toEur(item.amount, item.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) exceeds ${user.name}'s limit (€${limit.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) - escalated to ${ceo?.name||'CEO'}`, performedBy:user.name, performedAt:new Date().toISOString() }]);
+setShowEscalationModal(null); if (selectedSpend && selectedSpend.id === item.id) setSelectedSpend({...item, status:'Escalated', approvedBy:user.name, escalatedTo:ceo?.name||'CEO'}); };
+const escalationModal = showEscalationModal && (() => { const esc = showEscalationModal; const limit = user.approvalLimit || 0; const ceo = getCeoUser(); return (
+<div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-lg shadow-2xl max-w-md w-full p-6">
+<h3 className="text-xl font-bold text-gray-900 mb-3">Approval Limit Exceeded</h3>
+<p className="text-gray-600 mb-4">This spend (<strong>{fmtEur(esc.amount, esc.currency)}</strong>) exceeds your approval limit (<strong>{fmtEur(limit, 'EUR')}</strong>). It will be routed to <strong>{ceo?.name || 'CEO'}</strong> for final approval.</p>
+<div className="flex space-x-3"><button onClick={() => setShowEscalationModal(null)} className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300">Cancel</button><button onClick={confirmEscalation} className="flex-1 px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700">Continue</button></div></div></div>); })();
 const bulkUpdateSpend = (status) => { const items = spendApprovals.filter(s => selectedSpendIds.includes(s.id) && (s.status==='Pending'||s.status==='Escalated'));
 items.forEach(item => { updateSpendStatus(item.id, status); });
 setSelectedSpendIds([]);};
@@ -767,7 +832,7 @@ return (<div className={_pg}><div className="max-w-3xl mx-auto">{navBar}
 {dRow('Function / Department', s.department || '—')}
 {dRow('Vendor / Supplier', s.vendor)}
 {dRow('Spend Category', s.category)}
-{dRow('Approver', <span>{s.approver} {(() => { const au = mockUsers.find(u=>u.name===s.approver); return au && au.approvalLimit > 0 ? <span className="text-xs text-gray-500 ml-1">(limit: {fmtEur(au.approvalLimit, s.currency)})</span> : au?.isCeo ? <span className="text-xs text-gray-500 ml-1">(unlimited)</span> : null; })()}</span>)}
+{dRow('Approver', <span>{s.approver} {(() => { const au = mockUsers.find(u=>u.name===s.approver); return au && au.approvalLimit > 0 ? <span className="text-xs text-gray-500 ml-1">(limit: {fmtEur(au.approvalLimit, 'EUR')})</span> : au?.isCeo ? <span className="text-xs text-gray-500 ml-1">(unlimited)</span> : null; })()}</span>)}
 {dRow('Atom', (() => { const a = atoms.find(x=>x.code===s.atom); return a ? `${a.code} — ${a.name}` : s.atom; })())}
 {dRow('Cost Centre', (() => { const c = costCentres.find(x=>x.code===s.costCentre); return c ? `${c.code} — ${c.name}` : s.costCentre; })())}
 {dRow('Region', (() => { const r = regions.find(x=>x.code===s.region); return r ? `${r.code} — ${r.name}` : s.region||'—'; })())}
@@ -788,8 +853,8 @@ return (<div className={_pg}><div className="max-w-3xl mx-auto">{navBar}
 <Upload className="w-4 h-4"/><span>{isProcessing ? `Processing ${processingProgress.current} of ${processingProgress.total}...` : 'Upload Invoice'}</span>
 {isProcessing && <svg className="animate-spin w-4 h-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>}
 </button></div>)}
-</div> {(s.status === 'Pending' || s.status === 'Escalated') && canApproveSpend() && (s.status !== 'Escalated' || user.isCeo || hasPermission('settings.manage_users')) && (<div className="flex space-x-3 pt-4 border-t border-gray-200"> <button onClick={() => { updateSpendStatus(s.id,'Approved'); setSelectedSpend({...s,status:'Approved'}); }} className="px-5 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold">{s.status === 'Escalated' ? 'Final Approve' : 'Approve'}</button>
-<button onClick={() => { updateSpendStatus(s.id,'Rejected'); setSelectedSpend({...s,status:'Rejected'}); }} className="px-5 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-semibold">Reject</button></div>)}</div> </div></div>);}
+</div> {(s.status === 'Pending' || s.status === 'Escalated') && canApproveSpend() && (s.status !== 'Escalated' || user.isCeo || hasPermission('settings.manage_users')) && (<div className="flex space-x-3 pt-4 border-t border-gray-200"> <button onClick={() => { if (updateSpendStatus(s.id,'Approved') !== false) setSelectedSpend({...s,status:'Approved'}); }} className="px-5 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold">{s.status === 'Escalated' ? 'Final Approve' : 'Approve'}</button>
+<button onClick={() => { if (updateSpendStatus(s.id,'Rejected') !== false) setSelectedSpend({...s,status:'Rejected'}); }} className="px-5 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-semibold">Reject</button></div>)}</div> </div>{escalationModal}</div>);}
 if (spendView === 'form') { return (<div className={_pg}><div className="max-w-3xl mx-auto">{navBar}
 <div className="bg-white rounded-xl shadow-lg p-8"> <div className={_fj+" mb-6"}><p className="text-sm text-gray-500">Required fields are marked with an asterisk <span className="text-red-500">*</span></p><button onClick={() => setSpendView('list')} className="text-sm text-indigo-600 hover:text-indigo-800 font-semibold">← Back to Spend Approvals</button></div>
 {sf.originInvoiceId && (() => { const originInv = invoices.find(i => i.id === sf.originInvoiceId); return originInv ? (<div className="mb-5 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center space-x-2"><AlertCircle className="w-5 h-5 text-blue-600 flex-shrink-0"/><p className="text-sm text-blue-800">Created from invoice <strong>{originInv.invoiceNumber}</strong> ({originInv.vendor}). This spend approval will auto-link to the invoice upon approval.</p></div>) : null; })()}
@@ -812,6 +877,7 @@ const allPendingSelected = pendingFiltered.length > 0 && pendingFiltered.every(s
 const toggleSpendSelect = (id) => setSelectedSpendIds(prev => prev.includes(id) ? prev.filter(x=>x!==id) : [...prev,id]);
 const toggleAllSpend = () => { if (allPendingSelected) { setSelectedSpendIds([]); } else { setSelectedSpendIds(pendingFiltered.map(s=>s.id)); } };
 return (<div className={_pg}><div className="max-w-7xl mx-auto">{navBar}
+{spendAlerts.length > 0 && (<div className="mb-4 space-y-2">{spendAlerts.map(alert => (<div key={alert.id} className={`flex items-start justify-between p-4 rounded-lg border ${alert.threshold === '100%' ? 'bg-red-50 border-red-300' : 'bg-orange-50 border-orange-300'}`}><div className="flex items-start space-x-3"><AlertCircle className={`w-5 h-5 mt-0.5 flex-shrink-0 ${alert.threshold === '100%' ? 'text-red-600' : 'text-orange-600'}`}/><div><p className={`text-sm font-semibold ${alert.threshold === '100%' ? 'text-red-800' : 'text-orange-800'}`}>{alert.threshold} Threshold Reached — {alert.spendRef}</p><p className={`text-sm ${alert.threshold === '100%' ? 'text-red-700' : 'text-orange-700'}`}>{alert.spendTitle} — Invoiced: €{alert.totalInvoiced.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} of €{alert.approvedAmount.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} — Approver: {alert.approver}</p></div></div><button onClick={() => dismissSpendAlert(alert.id)} className={`flex-shrink-0 ${alert.threshold === '100%' ? 'text-red-400 hover:text-red-600' : 'text-orange-400 hover:text-orange-600'}`}><X className="w-4 h-4"/></button></div>))}</div>)}
 <div className="bg-white rounded-xl shadow-lg p-6"> <div className={_fj+" mb-6"}> <h2 className="text-2xl font-bold text-gray-800">Spend Approval List</h2> <div className="flex items-center space-x-3"> {selectedSpendIds.length > 0 && canApproveSpend() && (<> <span className="text-sm text-gray-600">{selectedSpendIds.length} selected</span>
 <button onClick={() => bulkUpdateSpend('Approved')} className="flex items-center space-x-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm font-semibold"><CheckCircle className="w-4 h-4"/><span>Bulk Approve</span></button> <button onClick={() => bulkUpdateSpend('Rejected')} className="flex items-center space-x-1 px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition text-sm font-semibold"><XCircle className="w-4 h-4"/><span>Bulk Reject</span></button> </>)}
 <div className="relative"><input value={spendSearch} onChange={e => setSpendSearch(e.target.value)} placeholder="Search spend approvals..." className="px-4 py-2 pl-10 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 w-64"/><AlertCircle className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2"/></div> <div className="relative">
@@ -825,7 +891,7 @@ return (<div className={_pg}><div className="max-w-7xl mx-auto">{navBar}
 <div><label className={_lb}>Submitted By</label><select value={spendFilters.submittedBy} onChange={e => updateSpendFilter('submittedBy',e.target.value)} className={`w-full ${_g}`}><option value="all">All Submitters</option>{[...new Set(spendApprovals.map(s=>s.submittedBy))].sort().map(n=>(<option key={n} value={n}>{n}</option>))}</select></div>
 <div><label className={_lb}>Approver</label><select value={spendFilters.approver} onChange={e => updateSpendFilter('approver',e.target.value)} className={`w-full ${_g}`}><option value="all">All</option>{[...new Set(spendApprovals.map(s=>s.approver))].sort().map(n=>(<option key={n} value={n}>{n}</option>))}</select></div>
 <div><label className={_lb}>Project</label><select value={spendFilters.project} onChange={e => updateSpendFilter('project',e.target.value)} className={`w-full ${_g}`}><option value="all">All Projects</option>{[...new Set(spendApprovals.map(s=>s.project).filter(Boolean))].sort().map(p=>(<option key={p} value={p}>{p}</option>))}</select></div></div> <div className="mt-4 pt-4 border-t border-gray-200"><p className="text-sm text-gray-600">Showing {filteredSpends.length} of {spendApprovals.length} requests</p></div></div>)}</div>
-<div className="relative"><label className="text-sm text-gray-600 mr-2">Group By:</label><select value={spendGroupBy} onChange={e => setSpendGroupBy(e.target.value)} className={_g}><option value="none">None</option><option value="status">Status</option><option value="vendor">Vendor</option><option value="category">Category</option><option value="department">Function</option><option value="submittedBy">Submitted By</option><option value="approver">Approver</option><option value="region">Region</option><option value="costCentre">Cost Centre</option><option value="atom">Atom</option><option value="project">Project</option><option value="dateRange">Date Range (Month/Year)</option></select></div> <div className="relative">
+<div className="relative"><label className="text-sm text-gray-600 mr-2">Group By:</label><select value={spendGroupBy} onChange={e => setSpendGroupBy(e.target.value)} className={_g}><option value="none">None</option><option value="status">Status</option><option value="vendor">Vendor</option><option value="category">Category</option><option value="department">Function</option><option value="submittedBy">Submitted By</option><option value="approver">Approver</option><option value="region">Region</option><option value="costCentre">Cost Centre</option><option value="atom">Atom</option><option value="project">Project</option><option value="dateRange">Date Range (Month/Year)</option><option value="threshold">Threshold Reached</option></select></div> <div className="relative">
 <button onClick={() => setShowSpendColSelector(!showSpendColSelector)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300" >Columns</button> {showSpendColSelector && (<div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-xl border border-gray-200 p-4 z-10"> <h3 className="font-semibold text-gray-800 mb-3">Show/Hide Columns</h3> <div className="space-y-2">
 {Object.entries({ref:'Reference',title:'Title',vendor:'Vendor',amount:'Amount',invoiced:'Invoiced',category:'Category',department:'Function',project:'Project',submittedBy:'Submitted By',date:'Date',status:'Status',approver:'Approver',region:'Region',costCentre:'Cost Centre',atom:'Atom'}).map(([k,label])=>(<label key={k} className="flex items-center space-x-2 cursor-pointer"><input type="checkbox" checked={spendVisibleCols[k]} onChange={() => toggleSpendCol(k)} className="w-4 h-4 text-green-600 rounded"/><span className="text-sm text-gray-700">{label}</span></label>))} </div></div>)}</div></div></div>
 <div className={_fj+" mb-4"}> <span className="text-sm text-gray-500">{filteredSpends.length} of {spendApprovals.length} requests</span> <div className="flex items-center space-x-3">
@@ -847,7 +913,7 @@ return (<div className={_pg}><div className="max-w-7xl mx-auto">{navBar}
 {spendVisibleCols.region && <th className={_th}>Region</th>}
 {spendVisibleCols.costCentre && <th className={_th}>Cost Centre</th>}
 {spendVisibleCols.atom && <th className={_th}>Atom</th>}
-{canApproveSpend() && <th className={_th}>Actions</th>} </tr></thead> <tbody>{(() => { const getSpendGroupKey = (s) => { if (spendGroupBy==='date') return new Date(s.submittedAt).toLocaleDateString(); if (spendGroupBy==='dateRange') { const d = new Date(s.submittedAt); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; } if (spendGroupBy==='region') { const r = regions.find(x=>x.code===s.region); return r ? `${r.code} — ${r.name}` : s.region||'—'; } if (spendGroupBy==='costCentre') { const c = costCentres.find(x=>x.code===s.costCentre); return c ? `${c.code} — ${c.name}` : s.costCentre||'—'; } if (spendGroupBy==='atom') { const a = atoms.find(x=>x.code===s.atom); return a ? `${a.code} — ${a.name}` : s.atom||'—'; } return s[spendGroupBy]||'—'; }; const getSortKey = (s) => { if (spendGroupBy==='date') return s.submittedAt; if (spendGroupBy==='dateRange') { const d = new Date(s.submittedAt); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; } return getSpendGroupKey(s); }; const formatGroupHeader = (key) => { if (spendGroupBy==='dateRange' && key && key.match(/^\d{4}-\d{2}$/)) { const [y,m] = key.split('-'); const monthName = new Date(Number(y), Number(m)-1).toLocaleString('en-GB',{month:'long',year:'numeric'}); return monthName; } return key; }; return (spendGroupBy !== 'none' ? [...filteredSpends].sort((a,b) => { const ka = getSortKey(a); const kb = getSortKey(b); return ka<kb?-1:ka>kb?1:0; }) : filteredSpends).map((s,i,arr) => { const groupKey = getSpendGroupKey(s);
+{canApproveSpend() && <th className={_th}>Actions</th>} </tr></thead> <tbody>{(() => { const getSpendGroupKey = (s) => { if (spendGroupBy==='date') return new Date(s.submittedAt).toLocaleDateString(); if (spendGroupBy==='dateRange') { const d = new Date(s.submittedAt); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; } if (spendGroupBy==='region') { const r = regions.find(x=>x.code===s.region); return r ? `${r.code} — ${r.name}` : s.region||'—'; } if (spendGroupBy==='costCentre') { const c = costCentres.find(x=>x.code===s.costCentre); return c ? `${c.code} — ${c.name}` : s.costCentre||'—'; } if (spendGroupBy==='atom') { const a = atoms.find(x=>x.code===s.atom); return a ? `${a.code} — ${a.name}` : s.atom||'—'; } if (spendGroupBy==='threshold') { const approvedEur = toEur(parseFloat(s.amount)||0, s.currency); if (approvedEur <= 0) return 'N/A'; const linked = invoices.filter(i => i.spendApprovalId === s.id); const totalEur = linked.reduce((sum,i) => sum + toEur(invoiceTotal(i), i.currency||s.currency), 0); const ratio = totalEur / approvedEur; if (ratio >= 1.0) return '100%+ Exceeded'; if (ratio >= 0.8) return '80%–99%'; if (ratio > 0) return 'Under 80%'; return 'No Invoices'; } return s[spendGroupBy]||'—'; }; const getSortKey = (s) => { if (spendGroupBy==='date') return s.submittedAt; if (spendGroupBy==='dateRange') { const d = new Date(s.submittedAt); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; } if (spendGroupBy==='threshold') { const g = getSpendGroupKey(s); const order = { '100%+ Exceeded':'0', '80%–99%':'1', 'Under 80%':'2', 'No Invoices':'3', 'N/A':'4' }; return order[g]||'5'; } return getSpendGroupKey(s); }; const formatGroupHeader = (key) => { if (spendGroupBy==='dateRange' && key && key.match(/^\d{4}-\d{2}$/)) { const [y,m] = key.split('-'); const monthName = new Date(Number(y), Number(m)-1).toLocaleString('en-GB',{month:'long',year:'numeric'}); return monthName; } return key; }; return (spendGroupBy !== 'none' ? [...filteredSpends].sort((a,b) => { const ka = getSortKey(a); const kb = getSortKey(b); return ka<kb?-1:ka>kb?1:0; }) : filteredSpends).map((s,i,arr) => { const groupKey = getSpendGroupKey(s);
 const prevKey = i>0 ? getSpendGroupKey(arr[i-1]) : null;
 const showHeader = spendGroupBy !== 'none' && groupKey !== prevKey;
 return (<React.Fragment key={s.id}> {showHeader && <tr className="bg-gray-50"><td colSpan={99} className="px-4 py-2 text-sm font-semibold text-gray-700">{formatGroupHeader(groupKey)}</td></tr>}
@@ -868,19 +934,19 @@ return (<React.Fragment key={s.id}> {showHeader && <tr className="bg-gray-50"><t
 {spendVisibleCols.costCentre && <td className={_td}>{(() => { const c = costCentres.find(x=>x.code===s.costCentre); return c ? `${c.code} — ${c.name}` : s.costCentre; })()}</td>}
 {spendVisibleCols.atom && <td className={_td}>{(() => { const a = atoms.find(x=>x.code===s.atom); return a ? `${a.code} — ${a.name}` : s.atom; })()}</td>}
 {canApproveSpend() && <td className="px-4 py-3">{(s.status==='Pending' || (s.status==='Escalated' && (user.isCeo || hasPermission('settings.manage_users')))) && <div className="flex space-x-1"><button onClick={() => updateSpendStatus(s.id,'Approved')} className="p-1 text-green-600 hover:bg-green-50 rounded" title="Approve"><CheckCircle className="w-4 h-4"/></button><button onClick={() => updateSpendStatus(s.id,'Rejected')} className="p-1 text-red-600 hover:bg-red-50 rounded" title="Reject"><XCircle className="w-4 h-4"/></button></div>}</td>} </tr></React.Fragment>); }); })()}</tbody> </table></div>
-{filteredSpends.length === 0 && <div className="text-center py-12"><p className="text-gray-500">No results found.</p></div>}</div> </div></div>);}
+{filteredSpends.length === 0 && <div className="text-center py-12"><p className="text-gray-500">No results found.</p></div>}</div> </div>{escalationModal}</div>);}
 if (currentPage === 'matching') { const isRestricted = !hasPermission('invoices.assign_all');
 const linked = invoices.filter(i => i.spendApprovalId);
 const unlinked = invoices.filter(i => !i.spendApprovalId && (!isRestricted || i.submittedBy === user.name));
 const getBudgetColor = (rem, total) => { if (total <= 0) return 'text-gray-500'; if (rem < 0) return 'text-red-600'; if (rem < total * 0.1) return 'text-orange-600'; return 'text-green-600'; };
 return (<div className={_pg}><div className="max-w-7xl mx-auto"> <div className="bg-white rounded-lg shadow-lg p-6 mb-6"><div className={_fj}> <div className="flex items-center space-x-3"><ExternalLink className="w-8 h-8 text-indigo-600"/><div><h1 className="text-2xl font-bold text-gray-800">Invoice Matching</h1><p className="text-sm text-gray-500">{pendingMatches.length} spend approvals with suggested invoices • {unlinked.length} unlinked invoices</p></div></div>
 <div className="flex items-center space-x-3"><button onClick={() => setCurrentPage('spend-approval')} className="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300" ><ArrowRight className="w-4 h-4 rotate-180"/><span>Back to Spend Approvals</span></button><button onClick={() => setCurrentPage('landing')} className="flex items-center space-x-2 px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200"><Home className="w-4 h-4"/><span>Dashboard</span></button></div>
-</div></div> {pendingMatches.length > 0 && (<div className="space-y-6 mb-6">{pendingMatches.map(m => { const spAmt = parseFloat(m.spendAmount)||0; return ( <div key={m.spendId} className="bg-white rounded-lg shadow-lg overflow-hidden">
+</div></div> <details className="bg-white rounded-lg shadow-lg mb-6"><summary className="px-6 py-3 cursor-pointer text-sm font-semibold text-indigo-600 hover:text-indigo-800">How matching scores work</summary><div className="px-6 pb-4"><table className="w-full text-sm text-left border-collapse"><thead><tr className="border-b border-gray-200"><th className="py-2 pr-4 font-semibold text-gray-700">Signal</th><th className="py-2 pr-4 font-semibold text-gray-700 w-16">Score</th><th className="py-2 font-semibold text-gray-700">How it works</th></tr></thead><tbody className="text-gray-600"><tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">SA Reference</td><td className="py-2 pr-4 font-bold text-blue-600">+60</td><td className="py-2">Spend approval reference (e.g. SA-0001) found in the invoice description or invoice number</td></tr><tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">Vendor match</td><td className="py-2 pr-4 font-bold text-green-600">+30</td><td className="py-2">Invoice vendor name contains the spend vendor or vice versa</td></tr><tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">Partial vendor</td><td className="py-2 pr-4 font-bold text-yellow-600">+15</td><td className="py-2">At least one word from the spend vendor appears in the invoice vendor</td></tr><tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">Amount match</td><td className="py-2 pr-4 font-bold text-purple-600">+20</td><td className="py-2">Invoice total (converted to EUR) is within ±10% of the spend amount</td></tr></tbody></table><p className="mt-3 text-xs text-gray-500">Minimum score to suggest: <strong>15</strong>. Fully invoiced spend approvals only show high-confidence matches (score ≥ 60). All amounts are compared in EUR using current exchange rates.</p></div></details> {pendingMatches.length > 0 && (<div className="space-y-6 mb-6">{pendingMatches.map(m => { const spAmt = parseFloat(m.spendAmount)||0; return ( <div key={m.spendId} className="bg-white rounded-lg shadow-lg overflow-hidden">
 <div className="bg-indigo-50 px-6 py-4 border-b border-indigo-200"><div className={_fj}><div><div className="flex items-center space-x-3 mb-1"><span className="font-mono text-sm font-bold text-indigo-600">{m.spendRef}</span><span className="text-lg font-bold text-gray-800">{m.spendTitle}</span></div>
 <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-gray-500"><span>Vendor: <strong className="text-gray-700">{m.spendVendor}</strong></span><span>Approved: <strong className="text-gray-700">{fmtEur(m.spendAmount, m.spendCurrency)}</strong>{m.spendCurrency !== 'EUR' && <span className="text-gray-400 ml-1">({m.spendCurrency} {Number(m.spendAmount).toLocaleString()})</span>}</span><span>Category: <strong className="text-gray-700">{m.spendCategory}</strong></span><span>Region: <strong className="text-gray-700">{m.spendRegion}</strong></span><span>Atom: <strong className="text-gray-700">{m.spendAtom}</strong></span></div></div>
 <div className="text-right"><div className={`text-sm font-semibold ${getBudgetColor(m.remaining, spAmt)}`}>{m.remaining >= 0 ? <span>€{toEur(m.remaining, m.spendCurrency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})} remaining</span> : <span>Overspent by €{toEur(Math.abs(m.remaining), m.spendCurrency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span>}</div>{m.linkedCount > 0 && <div className="text-xs text-gray-500">{m.linkedCount} invoice{m.linkedCount>1?'s':''} already linked</div>}<button onClick={() => dismissSpendMatch(m.spendId)} className="mt-1 text-xs text-red-500 hover:text-red-700 font-semibold">Dismiss All</button></div></div></div>
 <div className="p-6"><p className="text-xs font-semibold text-gray-500 uppercase mb-3">Suggested Invoices ({m.suggestions.length})</p><div className="space-y-3">{m.suggestions.map(sg => ( <div key={sg.invoiceId} className={`flex items-center justify-between p-4 rounded-lg border ${sg.score>=60?'border-blue-400 bg-blue-50':sg.score>=50?'border-green-300 bg-green-50':sg.score>=30?'border-yellow-300 bg-yellow-50':'border-gray-200 bg-gray-50'}`}>
-<div className="flex-1"><div className="flex items-center space-x-3 mb-1"><span className="font-semibold text-gray-800">{sg.invoiceNumber}</span><span className="px-2 py-0.5 bg-white border rounded text-sm text-gray-700">{sg.invoiceVendor}</span><span className="font-bold text-gray-900">${sg.invoiceAmount}</span>{sg.reasons.includes('SA reference match') && <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-bold">SA REF</span>}<span className={`px-2 py-0.5 rounded text-xs font-semibold ${sg.invoiceStatus==='Approved'?'bg-green-100 text-green-700':sg.invoiceStatus==='Rejected'?'bg-red-100 text-red-700':'bg-yellow-100 text-yellow-700'}`}>{sg.invoiceStatus}</span></div>
+<div className="flex-1"><div className="flex items-center space-x-3 mb-1"><span className="font-semibold text-gray-800">{sg.invoiceNumber}</span><span className="px-2 py-0.5 bg-white border rounded text-sm text-gray-700">{sg.invoiceVendor}</span><span className="font-bold text-gray-900">{fmtEur(sg.invoiceAmount, sg.invoiceCurrency)}{sg.invoiceCurrency && sg.invoiceCurrency !== 'EUR' && <span className="text-gray-400 text-xs ml-1">({sg.invoiceCurrency} {Number(sg.invoiceAmount).toLocaleString()})</span>}</span>{sg.reasons.includes('SA reference match') && <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-bold">SA REF</span>}<span className={`px-2 py-0.5 rounded text-xs font-semibold ${sg.invoiceStatus==='Approved'?'bg-green-100 text-green-700':sg.invoiceStatus==='Rejected'?'bg-red-100 text-red-700':'bg-yellow-100 text-yellow-700'}`}>{sg.invoiceStatus}</span></div>
 <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500"><span>Date: <strong className="text-gray-700">{sg.invoiceDate}</strong></span><span>Due: <strong className="text-gray-700">{sg.invoiceDueDate}</strong></span>{sg.invoiceSubmittedBy && <span>By: <strong className="text-gray-700">{sg.invoiceSubmittedBy}</strong></span>}</div>
 {sg.invoiceDescription && <p className="mt-1 text-xs text-gray-500 italic">{sg.invoiceDescription}</p>}
 <div className="flex flex-wrap gap-1 mt-2">{sg.reasons.map((r,i) => <span key={i} className={`px-2 py-0.5 rounded-full text-xs font-medium border ${r.includes('SA reference')?'bg-blue-100 text-blue-700 border-blue-300':'bg-white text-gray-600 border-gray-300'}`}>{r}</span>)}</div></div>
@@ -1043,7 +1109,7 @@ a.download = `audit_log_${new Date().toISOString().split('T')[0]}.csv`; a.click(
 <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
 <h3 className="text-sm font-semibold text-blue-900 mb-2">Available Placeholders</h3>
 <div className="flex flex-wrap gap-2">
-{['{{approver_name}}','{{submitted_by}}','{{spend_ref}}','{{spend_title}}','{{vendor}}','{{currency}}','{{amount}}','{{submitted_date}}','{{updated_by}}','{{updated_date}}','{{decision}}','{{decision_date}}'].map(p => (
+{['{{approver_name}}','{{submitted_by}}','{{spend_ref}}','{{spend_title}}','{{vendor}}','{{currency}}','{{amount}}','{{submitted_date}}','{{updated_by}}','{{updated_date}}','{{decision}}','{{decision_date}}','{{threshold}}','{{invoiced_amount}}','{{remaining_amount}}'].map(p => (
 <code key={p} className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded font-mono">{p}</code>
 ))}
 </div>
