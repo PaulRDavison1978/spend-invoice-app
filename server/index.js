@@ -1,10 +1,11 @@
 import 'dotenv/config';
+
 import express from 'express';
 import cors from 'cors';
 import extractInvoiceRouter from './routes/extract-invoice.js';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 8080;
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
