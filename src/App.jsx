@@ -238,14 +238,14 @@ const [editCategory, setEditCategory] = useState(null);
 const [newAtom, setNewAtom] = useState({ code:'', name:'' });
 const [newCC, setNewCC] = useState({ code:'', name:'' });
 const [newRegion, setNewRegion] = useState({ code:'', name:'' });
-const [newCurrency, setNewCurrency] = useState({ code:'', name:'' });
+const [newCurrency, setNewCurrency] = useState({ code:'', name:'', exchangeRateToEur:'' });
 const [newCategory, setNewCategory] = useState({ name:'' });
 const [currencies, setCurrencies] = useState([
-{ id:1, code:'GBP', name:'British Pound', active:true },
-{ id:2, code:'USD', name:'US Dollar', active:true },
-{ id:3, code:'EUR', name:'Euro', active:true }
+{ id:1, code:'GBP', name:'British Pound', exchangeRateToEur:'1.17', active:true },
+{ id:2, code:'USD', name:'US Dollar', exchangeRateToEur:'0.92', active:true },
+{ id:3, code:'EUR', name:'Euro', exchangeRateToEur:'1', active:true }
 ]);
-const eurRates = { GBP: 1.17, USD: 0.92, EUR: 1 };
+const eurRates = Object.fromEntries(currencies.map(c => [c.code, parseFloat(c.exchangeRateToEur) || 1]));
 const toEur = (amount, currency) => { const n = parseFloat(amount) || 0; const rate = eurRates[currency] || 1; return n * rate; };
 const fmtEur = (amount, currency) => { const converted = toEur(amount, currency); return `€${converted.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`; };
 const currencySymbol = (code) => { const symbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥', CHF: 'CHF ', CAD: 'C$', AUD: 'A$', SEK: 'kr', NOK: 'kr', DKK: 'kr', PLN: 'zł', CZK: 'Kč', HUF: 'Ft', ZAR: 'R' }; return symbols[(code || '').toUpperCase()] || (code ? code + ' ' : '$'); };
@@ -950,7 +950,16 @@ return (
 {renderLookup('atoms','Atoms',atoms,setAtoms,editAtom,setEditAtom,newAtom,setNewAtom,'ATOM',true,5,'Code (e.g. FIN)')}
 {renderLookup('costCentres','Cost Centres',costCentres,setCostCentres,editCC,setEditCC,newCC,setNewCC,'CC',true,6,'Code (e.g. CC600)')}
 {renderLookup('regions','Regions',regions,setRegions,editRegion,setEditRegion,newRegion,setNewRegion,'REGION',true,5,'Code (e.g. LATAM)')}
-{renderLookup('currencies','Currencies',currencies,setCurrencies,editCurrency,setEditCurrency,newCurrency,setNewCurrency,'CURRENCY',true,3,'Code (e.g. JPY)')}
+<div className="border border-gray-200 rounded-lg overflow-hidden">
+<button onClick={() => toggleLookup('currencies')} className="w-full flex items-center justify-between px-5 py-4 bg-gray-50 hover:bg-gray-100 transition">
+<h2 className="text-lg font-bold text-gray-800">Currencies</h2>
+<div className="flex items-center space-x-2"><span className="text-xs text-gray-500">{currencies.length} items</span>{collapsedLookups.currencies ? <ChevronDown className="w-5 h-5 text-gray-500"/> : <ChevronUp className="w-5 h-5 text-gray-500"/>}</div>
+</button>
+{!collapsedLookups.currencies && (<div className="p-5">
+<div className="flex space-x-2 mb-4"><input placeholder="Code (e.g. JPY)" value={newCurrency.code||''} onChange={e => setNewCurrency(p=>({...p,code:e.target.value.toUpperCase()}))} className={`w-28 ${_i}`} maxLength={3}/><input placeholder="Name" value={newCurrency.name} onChange={e => setNewCurrency(p=>({...p,name:e.target.value}))} className={`flex-1 ${_i}`}/><input placeholder="Rate to EUR" type="number" step="0.000001" value={newCurrency.exchangeRateToEur||''} onChange={e => setNewCurrency(p=>({...p,exchangeRateToEur:e.target.value}))} className={`w-32 ${_i}`}/><button onClick={() => { if (!newCurrency.code||!newCurrency.name||!newCurrency.exchangeRateToEur) return; if (currencies.find(i=>i.code===newCurrency.code)) { alert('Code exists'); return; } const n = {id:Date.now(),code:newCurrency.code,name:newCurrency.name,exchangeRateToEur:newCurrency.exchangeRateToEur,active:true}; setCurrencies(prev=>[...prev,n]); setNewCurrency({code:'',name:'',exchangeRateToEur:''}); setAuditLog(prev=>[...prev,{id:Date.now(),action:'CURRENCY_CREATED',details:`Currency created: ${n.code} — ${n.name} (Rate: ${n.exchangeRateToEur})`,performedBy:user.name,performedAt:new Date().toISOString()}]); }} className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold">Add</button></div>
+<table className="w-full text-left"><thead><tr className="border-b border-gray-200"><th className={_th}>Code</th><th className={_th}>Name</th><th className={_th}>Rate to EUR</th><th className={_th}>Status</th><th className={_th}>Actions</th></tr></thead><tbody>{currencies.map(item => (<tr key={item.id} className="border-b border-gray-100 hover:bg-gray-50">
+{editCurrency===item.id ? (<><td className="px-4 py-2"><input value={item.code} onChange={e => setCurrencies(prev=>prev.map(x=>x.id===item.id?{...x,code:e.target.value.toUpperCase()}:x))} className={`w-20 ${_i}`} maxLength={3}/></td><td className="px-4 py-2"><input value={item.name} onChange={e => setCurrencies(prev=>prev.map(x=>x.id===item.id?{...x,name:e.target.value}:x))} className={`w-full ${_i}`}/></td><td className="px-4 py-2"><input type="number" step="0.000001" value={item.exchangeRateToEur||''} onChange={e => setCurrencies(prev=>prev.map(x=>x.id===item.id?{...x,exchangeRateToEur:e.target.value}:x))} className={`w-28 ${_i}`} disabled={item.code==='EUR'}/></td><td className="px-4 py-2"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${item.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{item.active?'Active':'Inactive'}</span></td><td className="px-4 py-2"><button onClick={() => { setEditCurrency(null); setAuditLog(prev=>[...prev,{id:Date.now(),action:'CURRENCY_UPDATED',details:`Currency updated: ${item.code} — ${item.name} (Rate: ${item.exchangeRateToEur})`,performedBy:user.name,performedAt:new Date().toISOString()}]); }} className="text-xs text-green-600 font-semibold">Save</button></td></>) : (<><td className="px-4 py-3 text-sm font-mono font-semibold text-indigo-600">{item.code}</td><td className={_td}>{item.name}</td><td className="px-4 py-3 text-sm font-mono">{parseFloat(item.exchangeRateToEur||1).toFixed(6)}</td><td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${item.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{item.active?'Active':'Inactive'}</span></td><td className="px-4 py-3 text-sm"><div className="flex space-x-2"><button onClick={() => setEditCurrency(item.id)} className="text-xs text-indigo-600 font-semibold">Edit</button><button onClick={() => { setCurrencies(prev=>prev.map(x=>x.id===item.id?{...x,active:!x.active}:x)); setAuditLog(prev=>[...prev,{id:Date.now(),action:`CURRENCY_${item.active?'DEACTIVATED':'ACTIVATED'}`,details:`Currency ${item.active?'deactivated':'activated'}: ${item.code} — ${item.name}`,performedBy:user.name,performedAt:new Date().toISOString()}]); }} className={`text-xs font-semibold ${item.active?'text-red-600':'text-green-600'}`}>{item.active?'Deactivate':'Activate'}</button></div></td></>)}</tr>))}</tbody></table>
+</div>)}</div>
 {renderLookup('categories','Spend Categories',categories,setCategories,editCategory,setEditCategory,newCategory,setNewCategory,'CATEGORY',false)}
 <div className="border border-gray-200 rounded-lg overflow-hidden">
 <button onClick={() => toggleLookup('functions')} className="w-full flex items-center justify-between px-5 py-4 bg-gray-50 hover:bg-gray-100 transition">
