@@ -11,6 +11,7 @@ import rolesRouter from './routes/roles.js';
 import lookupsRouter from './routes/lookups.js';
 import auditLogsRouter from './routes/audit-logs.js';
 import emailTemplatesRouter from './routes/email-templates.js';
+import spendAlertsRouter from './routes/spend-alerts.js';
 import auth from './middleware/auth.js';
 import errorHandler from './middleware/errorHandler.js';
 
@@ -41,6 +42,7 @@ app.use(rolesRouter);
 app.use(lookupsRouter);
 app.use(auditLogsRouter);
 app.use(emailTemplatesRouter);
+app.use(spendAlertsRouter);
 
 // Centralized error handler
 app.use(errorHandler);

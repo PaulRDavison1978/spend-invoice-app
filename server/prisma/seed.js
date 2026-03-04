@@ -194,6 +194,12 @@ async function main() {
       subject: 'Spend Approval {{decision}}: {{spend_ref}} — {{spend_title}}',
       body: 'Dear {{submitted_by}},\n\nYour spend approval request has been {{decision}}.\n\nReference: {{spend_ref}}\nTitle: {{spend_title}}\nVendor: {{vendor}}\nAmount: {{currency}} {{amount}}\nDecision: {{decision}}\nDecision date: {{decision_date}}\nDecided by: {{approver_name}}\n\nPlease log in to view the full details.\n\nThank you.',
     },
+    {
+      key: 'spend_limit_alert',
+      name: 'Spend Limit Alert — Threshold Reached',
+      subject: 'Spend Alert: {{spend_ref}} has reached {{threshold}} of approved amount',
+      body: 'Dear {{approver_name}},\n\nThe spend approval {{spend_ref}} — "{{spend_title}}" has reached {{threshold}} of its approved amount.\n\nReference: {{spend_ref}}\nTitle: {{spend_title}}\nDepartment: {{department}}\nApproved amount: {{currency}} {{approved_amount}}\nTotal invoiced: {{currency}} {{total_invoiced}}\nThreshold: {{threshold}}\n\nPlease log in to review the linked invoices.\n\nThank you.',
+    },
   ];
   for (const t of emailTemplates) {
     await prisma.emailTemplate.upsert({ where: { key: t.key }, update: { name: t.name, subject: t.subject, body: t.body }, create: t });

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import prisma from '../lib/prisma.js';
 import { logAudit } from '../services/auditService.js';
 import { findMatches } from '../services/matchingService.js';
+import { checkSpendThreshold } from '../services/thresholdService.js';
 
 const router = Router();
 
@@ -115,7 +116,9 @@ router.patch('/api/invoices/:id/link', async (req, res, next) => {
     const performedBy = req.user?.name || 'System';
     await logAudit({ action: 'INVOICE_MATCHED', details: `Invoice ${invoice.invoiceNumber} matched to spend approval "${spend.title}"`, performedBy, userId: req.user?.id });
 
-    res.json(updated);
+    const thresholdAlert = await checkSpendThreshold(spend.id, performedBy, req.user?.id);
+
+    res.json({ ...updated, thresholdAlert });
   } catch (err) { next(err); }
 });
 
@@ -125,6 +128,8 @@ router.patch('/api/invoices/:id/unlink', async (req, res, next) => {
     const invoice = await prisma.invoice.findUnique({ where: { id: parseInt(req.params.id) } });
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
 
+    const oldSpendApprovalId = invoice.spendApprovalId;
+
     const updated = await prisma.invoice.update({
       where: { id: invoice.id },
       data: { spendApprovalId: null },
@@ -133,7 +138,13 @@ router.patch('/api/invoices/:id/unlink', async (req, res, next) => {
     const performedBy = req.user?.name || 'System';
     await logAudit({ action: 'INVOICE_UNLINKED', details: `Invoice ${invoice.invoiceNumber} unlinked from spend approval`, performedBy, userId: req.user?.id });
 
-    res.json(updated);
+    // Re-check threshold on the old spend approval to clear/downgrade alerts
+    let thresholdAlert = null;
+    if (oldSpendApprovalId) {
+      thresholdAlert = await checkSpendThreshold(oldSpendApprovalId, performedBy, req.user?.id);
+    }
+
+    res.json({ ...updated, thresholdAlert });
   } catch (err) { next(err); }
 });
 
