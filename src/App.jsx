@@ -1,5 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Upload, FileText, CheckCircle, XCircle, Download, ExternalLink, AlertCircle, LogOut, User, Trash2,  Settings, Home, DollarSign, ArrowRight, ChevronDown, ChevronUp, Lock, Plus, Shield, Mail } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { useMsal, useIsAuthenticated } from '@azure/msal-react';
+import { InteractionRequiredAuthError } from '@azure/msal-browser';
+import { Upload, FileText, CheckCircle, XCircle, X, Download, ExternalLink, AlertCircle, LogOut, User, Trash2,  Settings, Home, DollarSign, ArrowRight, ChevronDown, ChevronUp, Lock, Plus, Shield, Mail } from 'lucide-react';
+import { loginRequest } from './authConfig.js';
+import { api, setTokenAcquirer } from './api/client.js';
 
 const PERMISSIONS = {
   invoices: {
@@ -51,7 +55,10 @@ const _cd = "bg-white rounded-lg shadow-lg p-6";
 const _h2 = "text-xl font-bold text-gray-800 mb-4";
 const _fx = "flex items-center space-x-2";
 const _fj = "flex items-center justify-between";
+const { instance: msalInstance, accounts } = useMsal();
+const isMsalAuthenticated = useIsAuthenticated();
 const [user, setUser] = useState(null);
+const [userPermissions, setUserPermissions] = useState([]);
 const [isAuthenticating, setIsAuthenticating] = useState(false);
 const [authStep, setAuthStep] = useState('email');
 const [authEmail, setAuthEmail] = useState('');
@@ -59,6 +66,135 @@ const [authOtp, setAuthOtp] = useState('');
 const [authOtpError, setAuthOtpError] = useState('');
 const [generatedOtp, setGeneratedOtp] = useState('');
 const [otpExpiry, setOtpExpiry] = useState(null);
+const [dataLoaded, setDataLoaded] = useState(false);
+
+// Set up token acquirer for API client
+const acquireToken = useCallback(async () => {
+  if (accounts.length === 0) return null;
+  try {
+    const response = await msalInstance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
+    return response.accessToken;
+  } catch (err) {
+    if (err instanceof InteractionRequiredAuthError) {
+      const response = await msalInstance.acquireTokenPopup(loginRequest);
+      return response.accessToken;
+    }
+    throw err;
+  }
+}, [msalInstance, accounts]);
+
+useEffect(() => {
+  setTokenAcquirer(acquireToken);
+}, [acquireToken]);
+
+// MSAL login handler
+const msalLogin = async () => {
+  try {
+    setIsAuthenticating(true);
+    const loginResponse = await msalInstance.loginPopup(loginRequest);
+    const account = loginResponse.account;
+    const idTokenClaims = account.idTokenClaims || {};
+
+    // Call backend to activate/link user
+    const token = loginResponse.accessToken;
+    const API_BASE = import.meta.env.VITE_API_URL || '';
+    const resp = await fetch(`${API_BASE}/api/auth/callback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({
+        email: account.username,
+        oid: idTokenClaims.oid,
+        tid: idTokenClaims.tid,
+        name: account.name,
+      }),
+    });
+    const userData = await resp.json();
+    if (!resp.ok) {
+      alert(userData.error || 'Login failed');
+      setIsAuthenticating(false);
+      return;
+    }
+    setUser({ name: userData.name, email: userData.email, id: userData.id, role: userData.role, approvalLimit: userData.approvalLimit || 0, isCeo: userData.isCeo || false });
+    setUserPermissions(userData.permissions || []);
+    setIsAuthenticating(false);
+  } catch (err) {
+    console.error('MSAL login error:', err);
+    setIsAuthenticating(false);
+  }
+};
+
+// Load all data from API when user is authenticated
+const loadData = useCallback(async () => {
+  if (!user) return;
+  try {
+    const [invoicesData, spendsData, usersData, rolesData, lookupsData, templatesData] = await Promise.all([
+      api.get('/api/invoices'),
+      api.get('/api/spend-approvals'),
+      api.get('/api/users'),
+      api.get('/api/roles'),
+      Promise.all([
+        api.get('/api/lookups/atoms'),
+        api.get('/api/lookups/cost-centres'),
+        api.get('/api/lookups/regions'),
+        api.get('/api/lookups/currencies'),
+        api.get('/api/lookups/categories'),
+        api.get('/api/lookups/functions'),
+        api.get('/api/lookups/projects'),
+      ]),
+      api.get('/api/email-templates'),
+    ]);
+
+    // Transform invoice data for frontend compatibility
+    setInvoices(invoicesData.map(inv => ({
+      ...inv,
+      amount: String(inv.amount),
+      taxAmount: String(inv.taxAmount),
+      spendApprovalTitle: inv.spendApproval?.title || null,
+      spendApprovalId: inv.spendApproval?.id || inv.spendApprovalId || null,
+    })));
+
+    // Transform spend approval data
+    setSpendApprovals(spendsData.map(sp => ({
+      ...sp,
+      amount: String(sp.amount),
+      approver: sp.approver?.name || '',
+      submittedAt: sp.submittedAt,
+    })));
+
+    // Transform users for frontend compatibility
+    setMockUsers(usersData.map(u => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      role: u.role?.name || 'User',
+      status: u.status,
+      createdAt: u.createdAt,
+      invitedBy: u.invitedBy,
+      approvalLimit: Number(u.approvalLimit) || 0,
+      isCeo: u.isCeo,
+    })));
+
+    setRoles(rolesData);
+
+    const [atomsData, costCentresData, regionsData, currenciesData, categoriesData, functionsData, projectsData] = lookupsData;
+    setAtoms(atomsData);
+    setCostCentres(costCentresData);
+    setRegions(regionsData);
+    setCurrencies(currenciesData);
+    setCategories(categoriesData);
+    setFunctions(functionsData.map(f => ({ ...f, approver: f.approver?.name || '' })));
+    setProjects(projectsData);
+    setEmailTemplates(templatesData);
+
+    setDataLoaded(true);
+  } catch (err) {
+    console.error('Failed to load data:', err);
+  }
+}, [user]);
+
+useEffect(() => {
+  if (user && !dataLoaded) loadData();
+}, [user, dataLoaded, loadData]);
 const defaultInvoices = [
 { id:9001, invoiceNumber:'INV-2001', vendor:'Adobe Inc.', date:'2025-02-01', dueDate:'2025-03-01', amount:'2350.00', taxAmount:'470.00', department:'Engineering', description:'CC license renewal', submittedDate:'2025-02-01T10:00:00Z', submittedBy:'Jane Smith', lineItems:[], spendApprovalId:null, spendApprovalTitle:null, fileName:'INV-2001.pdf', fileType:'application/pdf' },
 { id:9002, invoiceNumber:'INV-2002', vendor:'Dell Technologies', date:'2025-02-05', dueDate:'2025-03-05', amount:'8200.00', taxAmount:'1640.00', department:'Operations', description:'Laptop refresh x8', submittedDate:'2025-02-05T14:00:00Z', submittedBy:'John Doe', lineItems:[], spendApprovalId:null, spendApprovalTitle:null, fileName:'INV-2002.pdf', fileType:'application/pdf' },
@@ -233,7 +369,8 @@ const unlinkInvoice = (invoiceId) => { const inv = invoices.find(i => i.id === i
 setInvoices(prev => prev.map(i => i.id === invoiceId ? {...i, spendApprovalId: null, spendApprovalTitle: null} : i));
 setAuditLog(prev => [...prev, { id:Date.now(), action:'INVOICE_UNLINKED', details:`Invoice ${inv.invoiceNumber} unlinked from spend approval`, performedBy:user.name, performedAt:new Date().toISOString() }]);};
 const getLinkedInvoices = (spendId) => invoices.filter(i => i.spendApprovalId === spendId);
-const getSpendRemaining = (sp) => { const linked = getLinkedInvoices(sp.id); const total = linked.reduce((sum,i) => sum + (parseFloat(i.amount)||0), 0); return parseFloat(sp.amount) - total; };
+const invoiceTotal = (i) => (parseFloat(i.totalAmount) || ((parseFloat(i.amount)||0) + (parseFloat(i.taxAmount)||0)));
+const getSpendRemaining = (sp) => { const linked = getLinkedInvoices(sp.id); const totalEur = linked.reduce((sum,i) => sum + toEur(invoiceTotal(i), i.currency||sp.currency), 0); return toEur(parseFloat(sp.amount)||0, sp.currency) - totalEur; };
 const [spendApprovals, setSpendApprovals] = useState([
 { id:1, ref:'SA-0001-ENG-CC200-UK', department:'Engineering', title:'Adobe Creative Cloud License', currency:'GBP', amount:'2400', category:'Software', vendor:'Adobe Inc.', approver:'Bob Johnson', costCentre:'CC200', atom:'ENG', region:'UK', project:'Project Alpha', status:'Approved', submittedBy:'Jane Smith', submittedAt:'2025-01-15T10:30:00Z', exceptional:'No', timeSensitive:false, justification:'10 seat renewal.' },
 { id:2, ref:'SA-0002-ENG-CC200-US', department:'Engineering', title:'AWS Infrastructure Q2', currency:'USD', amount:'15000', category:'Software', vendor:'Amazon Web Services', approver:'Bob Johnson', costCentre:'CC200', atom:'ENG', region:'US', project:'Project Alpha', status:'Pending', submittedBy:'John Doe', submittedAt:'2025-02-01T14:20:00Z', exceptional:'No', timeSensitive:true, justification:'March launch infra.' },
@@ -295,6 +432,8 @@ const canManagePermissions = () => hasPermission('settings.manage_users');
 const canAssignInvoices = () => hasPermission('invoices.assign_all') || hasPermission('invoices.assign_own');
 const hasPermission = (key) => {
   if (!user) return false;
+  // Use API-loaded permissions if available, fallback to role-based lookup
+  if (userPermissions.length > 0) return userPermissions.includes(key);
   const r = roles.find(r => r.name === user.role);
   return r ? r.permissions.includes(key) : false;
 };
@@ -305,8 +444,12 @@ const getVisibilityScope = (domain) => {
   return 'none';
 };
 const getUserDepts = () => { if (!user) return []; if (hasPermission('spend.view_all')) return []; return functions.filter(f => f.approver === user.name).map(f => f.name); };
-const logout = () => { const auditEntry = { id: Date.now(), action: 'USER_LOGOUT', details: `User logged out`, performedBy: user.name, performedAt: new Date().toISOString()};
-setAuditLog(prev => [...prev, auditEntry]); setTimeout(() => { setUser(null);
+const logout = async () => {
+try { await api.post('/api/auth/logout'); } catch {}
+try { await msalInstance.logoutPopup(); } catch {}
+setUser(null);
+setUserPermissions([]);
+setDataLoaded(false);
 setCurrentPage('landing'); setInvoices(defaultInvoices);
 setSelectedFiles([]);
 setExtractedDataBatch([]);
@@ -315,7 +458,7 @@ setSelectedInvoice(null);
 setShowSuccessNotification(false);
 setShowDeleteConfirmation(false);
 setDeleteConfirmationInput('');
-setInvoiceToDelete(null); }, 100);};
+setInvoiceToDelete(null); };
 const updateUserRole = (userId, newRole) => { const targetUser = mockUsers.find(u => u.id === userId);
 const oldRole = targetUser.role;
 setMockUsers(mockUsers.map(u => u.id === userId ? { ...u, role: newRole } : u ));
@@ -450,6 +593,7 @@ setSelectedFiles([]);
 setIsProcessing(false);
 setProcessingProgress({ current: 0, total: 0 });
 if (fileInputRef.current) { fileInputRef.current.value = '';}};
+const removeFromBatch = (idx) => { setExtractedDataBatch(prev => { const next = prev.filter((_, i) => i !== idx); if (next.length === 0 && fileInputRef.current) fileInputRef.current.value = ''; return next; }); setSelectedFiles(prev => prev.filter((_, i) => i !== idx)); };
 const toggleColumnVisibility = (columnKey) => { setVisibleColumns(prev => ({ ...prev, [columnKey]: !prev[columnKey] }));};
 const updateFilter = (key, value) => { setFilters(prev => ({ ...prev, [key]: value }));
 const auditEntry = { id: Date.now(), action: 'FILTER_APPLIED', details: `Filter applied: ${key} = ${value}`, performedBy: user.name, performedAt: new Date().toISOString()};
@@ -510,7 +654,7 @@ disabled={isAuthenticating}/> {authOtpError && ( <div className="mt-2 p-3 bg-red
 onClick={verifyOtpAndLogin}
 disabled={isAuthenticating || authOtp.length !== 6} className="w-full bg-indigo-600 text-white py-4 rounded-lg font-semibold hover:bg-indigo-700 transition disabled:opacity-50 disabled:cursor-not-allowed mb-3" > {isAuthenticating ? ( <div className="flex items-center justify-center space-x-2"> <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div> <span>Verifying...</span></div> ) : ( 'Verify & Sign In')}</button> <button onClick={resendOtp}
 disabled={isAuthenticating} className="w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-medium hover:bg-gray-300 transition disabled:opacity-50 disabled:cursor-not-allowed" > Resend OTP</button></div>)}
-<div className="mt-8 text-center text-sm text-gray-500"> <p>OTP authentication</p></div> <div className="mt-6 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-700"> <p className="font-semibold text-blue-800 mb-1">Demo credentials:</p> <p>john.doe@company.com / 123456 (Admin) • jane.smith@company.com / 234567 (Finance) • bob.johnson@company.com / 345678 (Approver) • alice.williams@company.com / 456789 (User)</p></div></div></div>);}
+<div className="mt-6 relative"><div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-300"></div></div><div className="relative flex justify-center text-sm"><span className="px-2 bg-white text-gray-500">or</span></div></div><button onClick={msalLogin} disabled={isAuthenticating} className="mt-6 w-full bg-blue-700 text-white py-4 rounded-lg font-semibold hover:bg-blue-800 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-3">{isAuthenticating ? (<><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div><span>Signing in...</span></>) : (<><svg className="w-5 h-5" viewBox="0 0 23 23"><path fill="#f3f3f3" d="M0 0h11v11H0z"/><path fill="#f35325" d="M0 0h11v11H0z"/><path fill="#81bc06" d="M12 0h11v11H12z"/><path fill="#05a6f0" d="M0 12h11v11H0z"/><path fill="#ffba08" d="M12 12h11v11H12z"/></svg><span>Sign in with Microsoft</span></>)}</button><div className="mt-8 text-center text-sm text-gray-500"> <p>OTP or Microsoft authentication</p></div> <div className="mt-6 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-700"> <p className="font-semibold text-blue-800 mb-1">Demo credentials (OTP):</p> <p>john.doe@company.com / 123456 (Admin) • jane.smith@company.com / 234567 (Finance) • bob.johnson@company.com / 345678 (Approver) • alice.williams@company.com / 456789 (User)</p></div></div></div>);}
 if (currentPage === 'landing') { const h = new Date().getHours();
 const g = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
 return (<div className={_pg}><div className="max-w-5xl mx-auto"> <div className="bg-white rounded-lg shadow-lg p-6 mb-8"><div className={_fj}> <div className="flex items-center space-x-3"><Home className="w-8 h-8 text-indigo-600"/><div><h1 className="text-2xl font-bold text-gray-800">{g}, {user.name.split(' ')[0]}</h1><p className="text-sm text-gray-500">Dashboard</p></div></div>
@@ -598,6 +742,19 @@ setSelectedSpend({...spend});
 const navBar = (<div className="bg-white rounded-lg shadow-lg p-6 mb-6"><div className={_fj}> <div className="flex items-center space-x-3"><DollarSign className="w-8 h-8 text-green-600"/><h1 className="text-2xl font-bold text-gray-800">Spend Approvals</h1></div>
 <div className="flex items-center space-x-4"><div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 rounded-lg"><User className="w-5 h-5 text-indigo-600"/><div className="text-sm"><p className="font-semibold text-gray-800">{user.name}</p><p className="text-xs text-gray-600">{user.role}</p></div></div><button onClick={() => setCurrentPage('landing')} className="flex items-center space-x-2 px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200"><Home className="w-4 h-4"/><span>Dashboard</span></button><button onClick={logout} className="flex items-center space-x-2 px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200"><LogOut className="w-4 h-4"/><span>Logout</span></button></div>
 </div></div>);
+const getCeoUser = () => mockUsers.find(u => u.isCeo && u.status === 'Active');
+const updateSpendStatus = (id, status) => { const item = spendApprovals.find(s=>s.id===id);
+if (status === 'Approved' && item.status === 'Pending') { const approverUser = mockUsers.find(u => u.name === user.name);
+const limit = approverUser?.approvalLimit || 0; const amt = parseFloat(item.amount) || 0;
+if (limit > 0 && amt > limit && !approverUser?.isCeo) { const ceo = getCeoUser();
+setSpendApprovals(prev => prev.map(s => s.id===id ? {...s, status:'Escalated', approvedBy:user.name, escalatedTo:ceo?.name||'CEO', escalatedAt:new Date().toISOString()} : s));
+setAuditLog(prev => [...prev, { id:Date.now(), action:'SPEND_ESCALATED', details:`"${item.title}" (€${toEur(item.amount, item.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) exceeds ${user.name}'s limit (€${toEur(limit, item.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) - escalated to ${ceo?.name||'CEO'}`, performedBy:user.name, performedAt:new Date().toISOString() }]); return; }}
+setSpendApprovals(prev => prev.map(s => s.id===id ? {...s, status, approvedBy:status==='Approved'||status==='Rejected'?user.name:s.approvedBy} : s));
+setAuditLog(prev => [...prev, { id:Date.now(), action:`SPEND_${status.toUpperCase()}`, details:`Spend request "${item.title}" (€${toEur(item.amount, item.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) ${status.toLowerCase()} - Vendor: ${item.vendor}`, performedBy:user.name, performedAt:new Date().toISOString() }]);
+if (status === 'Approved' && item.originInvoiceId) { const originInv = invoices.find(i => i.id === item.originInvoiceId); if (originInv && !originInv.spendApprovalId) { setInvoices(prev => prev.map(i => i.id === item.originInvoiceId ? {...i, spendApprovalId: id, spendApprovalTitle: item.title} : i)); setAuditLog(prev => [...prev, { id:Date.now()+1, action:'INVOICE_AUTO_LINKED', details:`Invoice ${originInv.invoiceNumber} auto-linked to spend approval "${item.title}" (€${toEur(item.amount, item.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) upon approval`, performedBy:user.name, performedAt:new Date().toISOString() }]); } }};
+const bulkUpdateSpend = (status) => { const items = spendApprovals.filter(s => selectedSpendIds.includes(s.id) && (s.status==='Pending'||s.status==='Escalated'));
+items.forEach(item => { updateSpendStatus(item.id, status); });
+setSelectedSpendIds([]);};
 if (spendSubmitted) { return (<div className={_pg}><div className="max-w-3xl mx-auto">{navBar}
 <div className="bg-white rounded-xl shadow-lg p-12 text-center"> <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4"/> <h2 className="text-2xl font-bold text-gray-800 mb-3">Request Submitted</h2> <p className="text-gray-500 mb-2">Your spend approval for <strong>{sf.title}</strong> has been submitted.</p> <p className="text-gray-500 mb-2">{fmtEur(sf.amount, sf.currency)} • Approver: {sf.approver}</p>{sf.currency !== 'EUR' && <p className="text-xs text-gray-400 mb-8">Original: {sf.currency} {Number(sf.amount).toLocaleString()}</p>} <div className="flex justify-center space-x-4">
 <button onClick={() => { setSpendForm({ cc:'', title:'', currency:'', approver:'', amount:'', category:'', atom:'', vendor:'', costCentre:'', region:'', project:'', timeSensitive:false, exceptional:'', justification:'', department:'', originInvoiceId: null }); setSpendSubmitted(false); }} className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold">Create Another</button> <button onClick={() => { setSpendSubmitted(false); setSpendView('list'); }} className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition font-semibold">Back to Spend Approvals</button></div></div> </div></div>);}
@@ -618,10 +775,10 @@ return (<div className={_pg}><div className="max-w-3xl mx-auto">{navBar}
 {s.originInvoiceId && (() => { const originInv = invoices.find(i => i.id === s.originInvoiceId); return originInv ? dRow('Origin Invoice', <span className="text-indigo-600 font-medium">{originInv.invoiceNumber} — {originInv.vendor}</span>) : null; })()}
 {dRow('Exceptional Item', s.exceptional)}
 {dRow('Time-sensitive', s.timeSensitive ? <span className="px-2 py-0.5 bg-orange-100 text-orange-700 text-xs rounded font-semibold">Yes - Urgent</span> : 'No')}</div> <div className="mb-6"><h3 className="text-sm font-medium text-gray-500 mb-2">Business Justification</h3><div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-800">{s.justification || 'No justification provided.'}</div></div> <div className="mb-6"><h3 className="text-sm font-medium text-gray-500 mb-2">Linked Invoices</h3>
-{(() => { const linked = getLinkedInvoices(s.id); const totalInvoiced = linked.reduce((sum,i) => sum + (parseFloat(i.amount)||0), 0); const remaining = parseFloat(s.amount) - totalInvoiced; return (<> {linked.length > 0 ? (<>
-<div className="mb-3 flex items-center space-x-4 text-sm"><span className="text-gray-600">Approved: <strong>{fmtEur(s.amount, s.currency)}</strong></span><span className="text-gray-600">Invoiced: <strong>€{toEur(totalInvoiced, s.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</strong></span><span className={remaining < 0 ? 'text-red-600 font-semibold' : 'text-green-600 font-semibold'}>Remaining: €{toEur(remaining, s.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
-<div className="w-full bg-gray-200 rounded-full h-2 mb-3"><div className={`h-2 rounded-full ${remaining < 0 ? 'bg-red-500' : 'bg-green-500'}`} style={{width:`${Math.min(100,totalInvoiced/parseFloat(s.amount)*100)}%`}}></div></div>
-<div className="space-y-2">{linked.map(inv => (<div key={inv.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border"><div><span className="font-medium text-gray-800">{inv.invoiceNumber}</span><span className="text-sm text-gray-500 ml-2">{inv.vendor} • {currencySymbol(inv.currency)}{inv.amount}</span></div></div>))}</div>
+{(() => { const linked = getLinkedInvoices(s.id); const totalInvoicedEur = linked.reduce((sum,i) => sum + toEur(invoiceTotal(i), i.currency||s.currency), 0); const approvedEur = toEur(parseFloat(s.amount)||0, s.currency); const remainingEur = approvedEur - totalInvoicedEur; return (<> {linked.length > 0 ? (<>
+<div className="mb-3 flex items-center space-x-4 text-sm"><span className="text-gray-600">Approved: <strong>{fmtEur(s.amount, s.currency)}</strong></span><span className="text-gray-600">Invoiced: <strong>€{totalInvoicedEur.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</strong></span><span className={remainingEur < 0 ? 'text-red-600 font-semibold' : 'text-green-600 font-semibold'}>Remaining: €{remainingEur.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
+<div className="w-full bg-gray-200 rounded-full h-2 mb-3"><div className={`h-2 rounded-full ${remainingEur < 0 ? 'bg-red-500' : 'bg-green-500'}`} style={{width:`${Math.min(100,totalInvoicedEur/approvedEur*100)}%`}}></div></div>
+<div className="space-y-2">{linked.map(inv => (<div key={inv.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border"><div><span className="font-medium text-gray-800">{inv.invoiceNumber}</span><span className="text-sm text-gray-500 ml-2">{inv.vendor} • {currencySymbol(inv.currency)}{invoiceTotal(inv).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}{inv.currency !== 'EUR' && ` (€${toEur(invoiceTotal(inv), inv.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})})`}</span></div></div>))}</div>
 </>) : <p className="text-sm text-gray-500">No invoices linked yet.</p>} </>); })()}
 {s.status === 'Escalated' && (<div className="mb-4 p-3 bg-orange-50 border border-orange-200 rounded-lg"><p className="text-sm text-orange-800"><strong>Escalated:</strong> Approved by {s.approvedBy} but exceeds their limit. Awaiting {s.escalatedTo||'CEO'} approval.</p></div>)}
 {s.status === 'Approved' && canAssignInvoices() && (() => { const isRestricted = !hasPermission('invoices.assign_all'); if (isRestricted && s.submittedBy !== user.name) return null; const unlinkedInvs = invoices.filter(i => !i.spendApprovalId && (!isRestricted || i.submittedBy === user.name)); return unlinkedInvs.length > 0 ? (<div className="mt-4 pt-3 border-t border-gray-200"><label className="text-xs font-semibold text-gray-500 uppercase mb-1 block">Assign Invoice</label><select defaultValue="" onChange={e => { if (e.target.value) { const invId = Number(e.target.value); acceptMatch(invId, s.id); const inv = invoices.find(i=>i.id===invId); setSelectedSpend({...s}); } }} className={`w-full ${_g}`}><option value="" disabled>Select an unlinked invoice...</option>{unlinkedInvs.map(i => (<option key={i.id} value={i.id}>{i.invoiceNumber} — {i.vendor} (${i.amount})</option>))}</select></div>) : null; })()}
@@ -654,19 +811,6 @@ const pendingFiltered = filteredSpends.filter(s => s.status === 'Pending');
 const allPendingSelected = pendingFiltered.length > 0 && pendingFiltered.every(s => selectedSpendIds.includes(s.id));
 const toggleSpendSelect = (id) => setSelectedSpendIds(prev => prev.includes(id) ? prev.filter(x=>x!==id) : [...prev,id]);
 const toggleAllSpend = () => { if (allPendingSelected) { setSelectedSpendIds([]); } else { setSelectedSpendIds(pendingFiltered.map(s=>s.id)); } };
-const getCeoUser = () => mockUsers.find(u => u.isCeo && u.status === 'Active');
-const updateSpendStatus = (id, status) => { const item = spendApprovals.find(s=>s.id===id);
-if (status === 'Approved' && item.status === 'Pending') { const approverUser = mockUsers.find(u => u.name === user.name);
-const limit = approverUser?.approvalLimit || 0; const amt = parseFloat(item.amount) || 0;
-if (limit > 0 && amt > limit && !approverUser?.isCeo) { const ceo = getCeoUser();
-setSpendApprovals(prev => prev.map(s => s.id===id ? {...s, status:'Escalated', approvedBy:user.name, escalatedTo:ceo?.name||'CEO', escalatedAt:new Date().toISOString()} : s));
-setAuditLog(prev => [...prev, { id:Date.now(), action:'SPEND_ESCALATED', details:`"${item.title}" (€${toEur(item.amount, item.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) exceeds ${user.name}'s limit (€${toEur(limit, item.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) - escalated to ${ceo?.name||'CEO'}`, performedBy:user.name, performedAt:new Date().toISOString() }]); return; }}
-setSpendApprovals(prev => prev.map(s => s.id===id ? {...s, status, approvedBy:status==='Approved'||status==='Rejected'?user.name:s.approvedBy} : s));
-setAuditLog(prev => [...prev, { id:Date.now(), action:`SPEND_${status.toUpperCase()}`, details:`Spend request "${item.title}" (€${toEur(item.amount, item.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) ${status.toLowerCase()} - Vendor: ${item.vendor}`, performedBy:user.name, performedAt:new Date().toISOString() }]);
-if (status === 'Approved' && item.originInvoiceId) { const originInv = invoices.find(i => i.id === item.originInvoiceId); if (originInv && !originInv.spendApprovalId) { setInvoices(prev => prev.map(i => i.id === item.originInvoiceId ? {...i, spendApprovalId: id, spendApprovalTitle: item.title} : i)); setAuditLog(prev => [...prev, { id:Date.now()+1, action:'INVOICE_AUTO_LINKED', details:`Invoice ${originInv.invoiceNumber} auto-linked to spend approval "${item.title}" (€${toEur(item.amount, item.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}) upon approval`, performedBy:user.name, performedAt:new Date().toISOString() }]); } }};
-const bulkUpdateSpend = (status) => { const items = spendApprovals.filter(s => selectedSpendIds.includes(s.id) && (s.status==='Pending'||s.status==='Escalated'));
-items.forEach(item => { updateSpendStatus(item.id, status); });
-setSelectedSpendIds([]);};
 return (<div className={_pg}><div className="max-w-7xl mx-auto">{navBar}
 <div className="bg-white rounded-xl shadow-lg p-6"> <div className={_fj+" mb-6"}> <h2 className="text-2xl font-bold text-gray-800">Spend Approval List</h2> <div className="flex items-center space-x-3"> {selectedSpendIds.length > 0 && canApproveSpend() && (<> <span className="text-sm text-gray-600">{selectedSpendIds.length} selected</span>
 <button onClick={() => bulkUpdateSpend('Approved')} className="flex items-center space-x-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm font-semibold"><CheckCircle className="w-4 h-4"/><span>Bulk Approve</span></button> <button onClick={() => bulkUpdateSpend('Rejected')} className="flex items-center space-x-1 px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition text-sm font-semibold"><XCircle className="w-4 h-4"/><span>Bulk Reject</span></button> </>)}
@@ -712,7 +856,7 @@ return (<React.Fragment key={s.id}> {showHeader && <tr className="bg-gray-50"><t
 {spendVisibleCols.title && <td className="px-4 py-3 text-sm font-medium"><button onClick={() => setSelectedSpend(s)} className="text-indigo-600 hover:text-indigo-800 hover:underline text-left font-medium">{s.title}</button>{s.timeSensitive && <span className="ml-2 px-1.5 py-0.5 bg-orange-100 text-orange-700 text-xs rounded">Urgent</span>}</td>}
 {spendVisibleCols.vendor && <td className={_td}>{s.vendor}</td>}
 {spendVisibleCols.amount && <td className="px-4 py-3 text-sm text-gray-800 font-semibold">{fmtEur(s.amount, s.currency)}{s.currency !== 'EUR' && <div className="text-xs text-gray-400 font-normal">{s.currency} {Number(s.amount).toLocaleString()}</div>}</td>}
-{spendVisibleCols.invoiced && (() => { const linked = getLinkedInvoices(s.id); const total = linked.reduce((sum,i) => sum + (parseFloat(i.amount)||0), 0); const approved = parseFloat(s.amount)||0; const pct = approved > 0 ? (total/approved)*100 : 0; const colour = linked.length === 0 ? 'text-gray-400' : pct > 100 ? 'text-red-600' : pct >= 90 ? 'text-green-600' : pct >= 50 ? 'text-orange-600' : 'text-yellow-600'; return <td className="px-4 py-3 text-sm"><div className={`font-semibold ${colour}`}>€{toEur(total, s.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</div><div className="w-full bg-gray-200 rounded-full h-1.5 mt-1"><div className={`h-1.5 rounded-full ${pct > 100 ? 'bg-red-500' : pct >= 90 ? 'bg-green-500' : pct >= 50 ? 'bg-orange-400' : pct > 0 ? 'bg-yellow-400' : 'bg-gray-200'}`} style={{width:`${Math.min(100,pct)}%`}}></div></div><div className="text-xs text-gray-500 mt-0.5">{pct.toFixed(0)}% • {linked.length} inv</div></td>; })()}
+{spendVisibleCols.invoiced && (() => { const linked = getLinkedInvoices(s.id); const totalEur = linked.reduce((sum,i) => sum + toEur(invoiceTotal(i), i.currency||s.currency), 0); const approvedEur = toEur(parseFloat(s.amount)||0, s.currency); const pct = approvedEur > 0 ? (totalEur/approvedEur)*100 : 0; const colour = linked.length === 0 ? 'text-gray-400' : pct > 100 ? 'text-red-600' : pct >= 90 ? 'text-green-600' : pct >= 50 ? 'text-orange-600' : 'text-yellow-600'; return <td className="px-4 py-3 text-sm"><div className={`font-semibold ${colour}`}>€{totalEur.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</div><div className="w-full bg-gray-200 rounded-full h-1.5 mt-1"><div className={`h-1.5 rounded-full ${pct > 100 ? 'bg-red-500' : pct >= 90 ? 'bg-green-500' : pct >= 50 ? 'bg-orange-400' : pct > 0 ? 'bg-yellow-400' : 'bg-gray-200'}`} style={{width:`${Math.min(100,pct)}%`}}></div></div><div className="text-xs text-gray-500 mt-0.5">{pct.toFixed(0)}% • {linked.length} inv</div></td>; })()}
 {spendVisibleCols.category && <td className={_td}>{s.category}</td>}
 {spendVisibleCols.department && <td className={_td}>{s.department||'—'}</td>}
 {spendVisibleCols.project && <td className={_td}>{s.project||'—'}</td>}
@@ -989,7 +1133,7 @@ onClick={() => setSelectedInvoice(null)} className="flex items-center space-x-2 
 {invoice.supplier && (invoice.supplier.company || invoice.supplier.address || invoice.supplier.vat_number) && (<div className={_cd}> <h2 className={_h2}>Supplier Details</h2> <div className="grid grid-cols-2 gap-4"> {invoice.supplier.company && (<div className="col-span-2"> <label className="text-sm text-gray-600">Company</label> <p className="text-lg font-semibold text-gray-800">{invoice.supplier.company}</p></div>)} {invoice.supplier.address && (<div className="col-span-2"> <label className="text-sm text-gray-600">Address</label> <p className="text-sm text-gray-800">{invoice.supplier.address}</p></div>)} {invoice.supplier.vat_number && (<div> <label className="text-sm text-gray-600">VAT Number</label> <p className="text-sm font-semibold text-gray-800">{invoice.supplier.vat_number}</p></div>)} {invoice.supplier.phone && (<div> <label className="text-sm text-gray-600">Phone</label> <p className="text-sm text-gray-800">{invoice.supplier.phone}</p></div>)} {invoice.supplier.email && (<div> <label className="text-sm text-gray-600">Email</label> <p className="text-sm text-gray-800">{invoice.supplier.email}</p></div>)} {invoice.supplier.website && (<div> <label className="text-sm text-gray-600">Website</label> <p className="text-sm text-gray-800">{invoice.supplier.website}</p></div>)}</div></div>)}
 {invoice.customer && (invoice.customer.company || invoice.customer.address) && (<div className={_cd}> <h2 className={_h2}>Customer / Bill-to</h2> <div className="grid grid-cols-2 gap-4"> {invoice.customer.company && (<div className="col-span-2"> <label className="text-sm text-gray-600">Company</label> <p className="text-lg font-semibold text-gray-800">{invoice.customer.company}</p></div>)} {invoice.customer.attention && (<div className="col-span-2"> <label className="text-sm text-gray-600">Attention</label> <p className="text-sm text-gray-800">{invoice.customer.attention}</p></div>)} {invoice.customer.address && (<div className="col-span-2"> <label className="text-sm text-gray-600">Address</label> <p className="text-sm text-gray-800">{invoice.customer.address}</p></div>)} {invoice.customer.vat_number && (<div> <label className="text-sm text-gray-600">VAT Number</label> <p className="text-sm font-semibold text-gray-800">{invoice.customer.vat_number}</p></div>)}</div></div>)}
 <div className={_cd}> <h2 className={_h2}>Linked Spend Approval</h2> {invoice.spendApprovalId ? (() => { const sp = spendApprovals.find(s => s.id === invoice.spendApprovalId); return sp ? ( <div className="border border-indigo-200 bg-indigo-50 rounded-lg p-4"> <div className="flex items-center justify-between mb-2"><h3 className="font-semibold text-indigo-800"><button onClick={() => { setSelectedInvoice(null); setCurrentPage('spend-approval'); setSpendView('list'); setSelectedSpend(sp); }} className="hover:text-indigo-600 underline">{sp.ref} — {sp.title}</button></h3><button onClick={() => unlinkInvoice(invoice.id)} className="text-xs text-red-600 hover:text-red-800 font-semibold">Unlink</button></div>
-<div className="grid grid-cols-2 gap-2 text-sm"><div><span className="text-gray-500">Vendor:</span> <span className="text-gray-800">{sp.vendor}</span></div><div><span className="text-gray-500">Approved:</span> <span className="text-gray-800">{fmtEur(sp.amount, sp.currency)}</span></div><div><span className="text-gray-500">Category:</span> <span className="text-gray-800">{sp.category}</span></div><div><span className="text-gray-500">Remaining:</span> <span className={`font-semibold ${getSpendRemaining(sp) < 0 ? 'text-red-600' : 'text-green-600'}`}>€{toEur(getSpendRemaining(sp), sp.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div></div>
+<div className="grid grid-cols-2 gap-2 text-sm"><div><span className="text-gray-500">Vendor:</span> <span className="text-gray-800">{sp.vendor}</span></div><div><span className="text-gray-500">Approved:</span> <span className="text-gray-800">{fmtEur(sp.amount, sp.currency)}</span></div><div><span className="text-gray-500">Category:</span> <span className="text-gray-800">{sp.category}</span></div><div><span className="text-gray-500">Remaining:</span> <span className={`font-semibold ${getSpendRemaining(sp) < 0 ? 'text-red-600' : 'text-green-600'}`}>€{getSpendRemaining(sp).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div></div>
 </div> ) : <p className="text-sm text-gray-500">Linked spend approval not found.</p>; })() : ( <div><p className="text-sm text-gray-500 mb-3">No spend approval linked to this invoice.</p><label className="text-xs font-semibold text-gray-500 uppercase mb-1 block">Assign to Spend Approval</label><select defaultValue="" onChange={e => { if (e.target.value) { acceptMatch(invoice.id, Number(e.target.value)); setSelectedInvoice({...invoice, spendApprovalId: Number(e.target.value)}); } }} className={`w-full ${_g}`}><option value="" disabled>Select an approved spend approval...</option>{spendApprovals.filter(s => s.status === 'Approved' && (hasPermission('invoices.assign_all') || s.submittedBy === user.name)).map(s => (<option key={s.id} value={s.id}>{s.ref} — {s.title} — {s.vendor} ({fmtEur(s.amount, s.currency)})</option>))}</select></div>)}</div>
 {invoice.lineItems && invoice.lineItems.length > 0 && ( <div className={_cd}> <h2 className={_h2}>Line Items</h2> <div className="overflow-x-auto"> <table className="w-full"> <thead className="bg-gray-50"> <tr> {invoice.lineItems.some(li => li.category) && <th className="px-4 py-2 text-left text-sm font-semibold text-gray-700">Category</th>} <th className="px-4 py-2 text-left text-sm font-semibold text-gray-700">Description</th> <th className="px-4 py-2 text-right text-sm font-semibold text-gray-700">Quantity</th> <th className="px-4 py-2 text-right text-sm font-semibold text-gray-700">Unit Rate</th>
 <th className="px-4 py-2 text-right text-sm font-semibold text-gray-700">Amount</th></tr></thead> <tbody className="divide-y divide-gray-200"> {invoice.lineItems.map((item, idx) => ( <tr key={idx}> {invoice.lineItems.some(li => li.category) && <td className="px-4 py-2 text-sm text-gray-600">{item.category}</td>} <td className="px-4 py-2 text-sm text-gray-800">{item.description}</td> <td className="px-4 py-2 text-sm text-right text-gray-800">{item.quantity}</td> <td className="px-4 py-2 text-sm text-right text-gray-800">{currencySymbol(invoice.currency)}{item.rate}</td> <td className="px-4 py-2 text-sm text-right font-semibold text-gray-800">{currencySymbol(invoice.currency)}{item.amount}</td></tr> ))}</tbody></table></div></div>)}
@@ -1010,8 +1154,8 @@ onChange={handleFileSelect} className="hidden" id="file-upload"/> <label htmlFor
 style={{ width: `${(processingProgress.current / processingProgress.total) * 100}%` }} ></div></div></div>)}
 {extractionErrors.length > 0 && !isProcessing && (<div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6"><div className="flex items-start space-x-3"><AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5"/><div><h4 className="text-sm font-semibold text-yellow-800 mb-1">Some files could not be extracted with AI</h4><ul className="text-sm text-yellow-700 space-y-1">{extractionErrors.map((err, idx) => (<li key={idx}><strong>{err.fileName}:</strong> {err.error}</li>))}</ul><p className="text-xs text-yellow-600 mt-2">These files were processed using sample data instead.</p></div></div></div>)}
 {extractedDataBatch.length > 0 && !isProcessing && ( <div className="bg-green-50 border border-green-200 rounded-lg p-6 mb-6"> <div className={_fj+" mb-4"}> <h3 className="text-xl font-semibold text-gray-800"> Extracted Invoice Data ({extractedDataBatch.length} invoices)</h3> <button
-onClick={processInvoiceBatch} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition flex items-center space-x-2" > <CheckCircle className="w-4 h-4"/> <span>Process All</span></button></div> <div className="max-h-96 overflow-y-auto mb-4 space-y-4"> {extractedDataBatch.map((data, idx) => ( <div key={idx} className="bg-white p-4 rounded-lg border border-green-300"> <div className="flex items-center justify-between mb-2"> <span className="font-semibold text-gray-700">Invoice #{idx + 1}</span>
-<span className="text-xs text-gray-500">{data.fileName}</span></div> <div className="grid grid-cols-2 md:grid-cols-4 gap-3"> <div> <span className="text-xs text-gray-600">Invoice #:</span> <p className="text-sm font-semibold">{data.invoiceNumber}</p></div> <div> <span className="text-xs text-gray-600">Vendor:</span> <p className="text-sm font-semibold">{data.vendor}</p></div> <div> <span className="text-xs text-gray-600">Date:</span> <p className="text-sm font-semibold">{data.date}</p></div> <div> <span className="text-xs text-gray-600">Total:</span>
+onClick={processInvoiceBatch} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition flex items-center space-x-2" > <CheckCircle className="w-4 h-4"/> <span>Process All</span></button></div> <div className="max-h-96 overflow-y-auto mb-4 space-y-4"> {extractedDataBatch.map((data, idx) => ( <div key={idx} className="bg-white p-4 rounded-lg border border-green-300 relative"> <div className="flex items-center justify-between mb-2"> <span className="font-semibold text-gray-700">Invoice #{idx + 1}</span>
+<div className="flex items-center space-x-2"><span className="text-xs text-gray-500">{data.fileName}</span><button onClick={() => removeFromBatch(idx)} className="text-red-400 hover:text-red-600 hover:bg-red-50 rounded-full p-1 transition" title="Remove from batch"><X className="w-4 h-4"/></button></div></div> <div className="grid grid-cols-2 md:grid-cols-4 gap-3"> <div> <span className="text-xs text-gray-600">Invoice #:</span> <p className="text-sm font-semibold">{data.invoiceNumber}</p></div> <div> <span className="text-xs text-gray-600">Vendor:</span> <p className="text-sm font-semibold">{data.vendor}</p></div> <div> <span className="text-xs text-gray-600">Date:</span> <p className="text-sm font-semibold">{data.date}</p></div> <div> <span className="text-xs text-gray-600">Total:</span>
 <p className="text-sm font-semibold text-green-600">{currencySymbol(data.currency)}{data.totalAmount || (parseFloat(data.amount) + parseFloat(data.taxAmount)).toFixed(2)}</p></div></div></div> ))}</div> <button
 onClick={processInvoiceBatch} className="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700"  > Process All Invoices</button></div>)}</div> <div className={_cd}> <div className={_fj+" mb-6"}> <h2 className="text-2xl font-bold text-gray-800">Invoice List</h2> <div className="flex items-center space-x-3"><div className="relative"> <input type="text"
 placeholder="Search invoices..."
