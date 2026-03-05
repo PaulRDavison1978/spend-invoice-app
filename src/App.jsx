@@ -589,14 +589,13 @@ const initiateDeleteInvoice = (invoice) => { setInvoiceToDelete(invoice);
 setDeleteConfirmationInput('');
 setShowDeleteConfirmation(true);};
 const confirmDeleteInvoice = async () => { if (deleteConfirmationInput !== invoiceToDelete.invoiceNumber) { alert('Invoice number does not match. Please type the exact invoice number to confirm deletion.'); return;}
-const auditEntry = { id: Date.now(), action: 'DELETE', invoiceNumber: invoiceToDelete.invoiceNumber, invoiceId: invoiceToDelete.id, vendor: invoiceToDelete.vendor, amount: invoiceToDelete.amount, deletedBy: user.name, deletedAt: new Date().toISOString(), reason: 'Invoice Deleted by user'};
-setAuditLog([...auditLog, auditEntry]);
+try { await api.delete(`/api/invoices/${invoiceToDelete.id}`); } catch (err) { alert(`Failed to delete invoice: ${err.message}`); return; }
 setInvoices(invoices.filter(inv => inv.id !== invoiceToDelete.id));
 if (selectedInvoice && selectedInvoice.id === invoiceToDelete.id) { setSelectedInvoice(null);}
 setShowDeleteConfirmation(false);
 setInvoiceToDelete(null);
 setDeleteConfirmationInput('');
-alert(`Invoice ${invoiceToDelete.invoiceNumber} has been deleted and logged in audit trail.`);};
+alert(`Invoice ${invoiceToDelete.invoiceNumber} has been deleted.`);};
 const cancelDeleteInvoice = () => { setShowDeleteConfirmation(false);
 setInvoiceToDelete(null);
 setDeleteConfirmationInput('');};
@@ -639,11 +638,27 @@ setProcessingProgress({ current: 0, total: extractedDataBatch.length });
 const newInvoices = [];
 for (let i = 0; i < extractedDataBatch.length; i++) { const extractedData = extractedDataBatch[i];
 setProcessingProgress({ current: i + 1, total: extractedDataBatch.length });
-const newInvoice = { id: Date.now() + i, ...extractedData, submittedDate: new Date().toISOString(), submittedBy: user.name, spendApprovalId: null, spendApprovalTitle: null};
-await new Promise(resolve => setTimeout(resolve, 400));
+try {
+const saved = await api.post('/api/invoices', {
+  invoiceNumber: extractedData.invoiceNumber,
+  vendor: extractedData.vendor,
+  date: extractedData.date,
+  dueDate: extractedData.dueDate,
+  amount: extractedData.amount,
+  taxAmount: extractedData.taxAmount,
+  department: extractedData.department,
+  description: extractedData.description,
+  submittedBy: user.name,
+  fileName: extractedData.fileName,
+  fileUrl: extractedData.fileUrl,
+  supplierJson: extractedData.supplier || null,
+  customerJson: extractedData.customer || null,
+  currency: extractedData.currency,
+  lineItems: extractedData.lineItems || [],
+});
+const newInvoice = { ...saved, amount: String(saved.amount), taxAmount: String(saved.taxAmount), submittedDate: saved.createdAt || new Date().toISOString(), submittedBy: saved.submittedBy, spendApprovalId: null, spendApprovalTitle: null, fileName: extractedData.fileName, fileUrl: extractedData.fileUrl, fileType: extractedData.fileType };
 newInvoices.push(newInvoice);
-const auditEntry = { id: Date.now() + i + 1000, action: 'INVOICE_CREATED', details: `Invoice ${newInvoice.invoiceNumber} created - Vendor: ${newInvoice.vendor}, Amount: ${newInvoice.amount}`, invoiceNumber: newInvoice.invoiceNumber, performedBy: user.name, performedAt: new Date().toISOString()};
-setAuditLog(prev => [...prev, auditEntry]);}
+} catch (err) { console.error(`Failed to save invoice ${extractedData.invoiceNumber}:`, err); alert(`Failed to save invoice ${extractedData.invoiceNumber}: ${err.message}`); }}
 const allInvoices = [...invoices, ...newInvoices];
 setInvoices(allInvoices);
 setExtractedDataBatch([]);
@@ -760,38 +775,32 @@ setProcessingProgress({ current: i + 1, total: validFiles.length });
 let extracted = null;
 if (!anthropicApiKey) { alert(`Extraction failed for ${file.name}: No API key configured. Please add your Claude API key in Settings.`); continue; }
 try { extracted = await extractWithClaude(file, anthropicApiKey); } catch (err) { console.error(`Claude extraction failed for ${file.name}:`, err); alert(`Extraction failed for ${file.name}: ${err.message}`); continue; }
-const newInvoice = {
-id: Date.now() + i,
-invoiceNumber: extracted.invoiceNumber || `INV-${Date.now()}`,
-vendor: extracted.vendor || spend.vendor,
-date: extracted.date || new Date().toISOString().split('T')[0],
-dueDate: extracted.dueDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-amount: extracted.amount || '0.00',
-taxAmount: extracted.taxAmount || '0.00',
-department: extracted.department || spend.department,
-description: extracted.description || `Invoice for ${spend.title}`,
-lineItems: extracted.lineItems?.length > 0 ? extracted.lineItems : [],
-supplier: extracted.supplier || { company: spend.vendor, address: '', vat_number: '', website: '', phone: '', email: '' },
-customer: extracted.customer || null,
-paymentTerms: extracted.paymentTerms || '',
-currency: extracted.currency || spend.currency || '',
-vatRate: extracted.vatRate ?? 0.20,
-subtotal: extracted.subtotal || '0.00',
-totalAmount: extracted.totalAmount || '0.00',
-bankDetails: extracted.bankDetails || null,
-fileName: file.name,
-fileUrl: extracted?.fileUrl || URL.createObjectURL(file),
-fileType: file.type,
-submittedDate: new Date().toISOString(),
-submittedBy: user.name,
-spendApprovalId: spend.id,
-spendApprovalTitle: spend.title
-};
+const invNum = extracted.invoiceNumber || `INV-${Date.now()}`;
+try {
+const saved = await api.post('/api/invoices', {
+  invoiceNumber: invNum,
+  vendor: extracted.vendor || spend.vendor,
+  date: extracted.date || new Date().toISOString().split('T')[0],
+  dueDate: extracted.dueDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+  amount: extracted.amount || '0.00',
+  taxAmount: extracted.taxAmount || '0.00',
+  department: extracted.department || spend.department,
+  description: extracted.description || `Invoice for ${spend.title}`,
+  submittedBy: user.name,
+  fileName: file.name,
+  fileUrl: extracted?.fileUrl || null,
+  supplierJson: extracted.supplier || null,
+  customerJson: extracted.customer || null,
+  currency: extracted.currency || spend.currency || '',
+  lineItems: extracted.lineItems?.length > 0 ? extracted.lineItems : [],
+});
+// Link invoice to spend approval
+const linked = await api.patch(`/api/invoices/${saved.id}/link`, { spendApprovalId: spend.id });
+const newInvoice = { ...saved, ...linked, amount: String(saved.amount), taxAmount: String(saved.taxAmount), submittedDate: saved.createdAt || new Date().toISOString(), submittedBy: saved.submittedBy, spendApprovalTitle: spend.title, fileName: file.name, fileUrl: extracted?.fileUrl || URL.createObjectURL(file), fileType: file.type };
 newInvoices.push(newInvoice);
-setAuditLog(prev => [...prev, { id: Date.now() + i + 2000, action: 'INVOICE_UPLOADED_TO_SPEND', details: `Invoice ${invNum} uploaded to spend approval "${spend.title}" (${spend.ref}) - Vendor: ${newInvoice.vendor}, Amount: ${newInvoice.amount}`, performedBy: user.name, performedAt: new Date().toISOString() }]);
+} catch (err) { console.error(`Failed to save invoice for ${file.name}:`, err); alert(`Failed to save invoice for ${file.name}: ${err.message}`); continue; }
 }
 setInvoices(prev => [...prev, ...newInvoices]);
-newInvoices.forEach(inv => { checkSpendThreshold(spend.id, toEur(invoiceTotal(inv), inv.currency||spend.currency)); });
 setIsProcessing(false);
 setProcessingProgress({ current: 0, total: 0 });
 if (spendFileInputRef.current) { spendFileInputRef.current.value = ''; }
