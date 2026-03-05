@@ -12,6 +12,7 @@ import lookupsRouter from './routes/lookups.js';
 import auditLogsRouter from './routes/audit-logs.js';
 import emailTemplatesRouter from './routes/email-templates.js';
 import spendAlertsRouter from './routes/spend-alerts.js';
+import settingsRouter from './routes/settings.js';
 import auth from './middleware/auth.js';
 import errorHandler from './middleware/errorHandler.js';
 
@@ -26,15 +27,13 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Extract invoice uses its own API key auth
-app.use(extractInvoiceRouter);
-
 // Auth callback is public (used during login flow)
 app.use(authRouter);
 
 // All remaining routes require authentication
 app.use(auth);
 
+app.use(extractInvoiceRouter);
 app.use(invoicesRouter);
 app.use(spendApprovalsRouter);
 app.use(usersRouter);
@@ -43,6 +42,7 @@ app.use(lookupsRouter);
 app.use(auditLogsRouter);
 app.use(emailTemplatesRouter);
 app.use(spendAlertsRouter);
+app.use(settingsRouter);
 
 // Centralized error handler
 app.use(errorHandler);

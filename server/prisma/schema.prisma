@@ -229,3 +229,13 @@ model EmailTemplate {
 
   @@map("email_templates")
 }
+
+model AppSetting {
+  key       String   @id
+  value     String   @db.Text
+  encrypted Boolean  @default(false)
+  updatedBy String   @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}

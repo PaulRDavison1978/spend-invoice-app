@@ -1,7 +1,11 @@
 import { Router } from 'express';
 import Anthropic from '@anthropic-ai/sdk';
+import prisma from '../lib/prisma.js';
+import { decrypt } from '../services/cryptoService.js';
 
 const router = Router();
+
+const API_KEY_SETTING = 'anthropic_api_key';
 
 const SYSTEM_PROMPT = `You are an invoice data extraction assistant. Extract data from the provided invoice and return ONLY a raw JSON object (no markdown fences, no explanation) matching this exact structure:
 
@@ -60,16 +64,35 @@ Rules:
 - For dates, use YYYY-MM-DD format. If only a month/year is given, use the 1st of that month
 - Return ONLY the JSON object, nothing else`;
 
+async function resolveApiKey() {
+  // Try DB first
+  try {
+    const setting = await prisma.appSetting.findUnique({ where: { key: API_KEY_SETTING } });
+    if (setting) {
+      return setting.encrypted ? decrypt(setting.value) : setting.value;
+    }
+  } catch {
+    // DB or decryption failed — fall through to env var
+  }
+
+  // Fallback to environment variable
+  return process.env.ANTHROPIC_API_KEY || null;
+}
+
 router.post('/api/extract-invoice', async (req, res) => {
   try {
-    const { file, mediaType, apiKey } = req.body;
+    const { file, mediaType } = req.body;
 
-    const resolvedKey = apiKey || process.env.ANTHROPIC_API_KEY;
     if (!file || !mediaType) {
       return res.status(400).json({ error: 'Missing required fields: file, mediaType', type: 'invalid_request_error' });
     }
+
+    const resolvedKey = await resolveApiKey();
     if (!resolvedKey) {
-      return res.status(401).json({ error: 'No API key provided. Pass apiKey in the request body or set ANTHROPIC_API_KEY env var.', type: 'authentication_error' });
+      return res.status(422).json({
+        error: 'No Anthropic API key configured. An administrator must set the API key in Settings > API.',
+        type: 'configuration_error',
+      });
     }
 
     const isPdf = mediaType === 'application/pdf';
