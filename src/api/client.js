@@ -25,10 +25,9 @@ async function getHeaders() {
     }
   }
 
-  // In development, use dev auth bypass when no MSAL token is available
-  if (import.meta.env.DEV) {
-    headers['Authorization'] = `Bearer dev:john.doe@company.com`;
-  }
+  // Use dev auth bypass when no MSAL token is available
+  // TODO: Remove once Azure AD app registration is configured and VITE_AZURE_CLIENT_ID is set
+  headers['Authorization'] = `Bearer dev:john.doe@company.com`;
 
   return headers;
 }
