@@ -1,6 +1,7 @@
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
 let getTokenFn = null;
+let devEmail = null;
 
 /**
  * Set the function used to acquire MSAL access tokens.
@@ -10,9 +11,24 @@ export function setTokenAcquirer(fn) {
   getTokenFn = fn;
 }
 
+/**
+ * Set the dev bypass email for non-production auth.
+ * When set, API requests use `Bearer dev:<email>` instead of MSAL tokens.
+ */
+export function setDevEmail(email) {
+  devEmail = email;
+}
+
 async function getHeaders() {
   const headers = { 'Content-Type': 'application/json' };
 
+  // Dev mode: use dev bypass token
+  if (devEmail) {
+    headers['Authorization'] = `Bearer dev:${devEmail}`;
+    return headers;
+  }
+
+  // Production: acquire MSAL token
   if (getTokenFn) {
     try {
       const token = await getTokenFn();
@@ -21,13 +37,9 @@ async function getHeaders() {
         return headers;
       }
     } catch {
-      // If token acquisition fails, fall through to dev bypass
+      // If token acquisition fails, return headers without auth
     }
   }
-
-  // Use dev auth bypass when no MSAL token is available
-  // TODO: Remove once Azure AD app registration is configured and VITE_AZURE_CLIENT_ID is set
-  headers['Authorization'] = `Bearer dev:john.doe@company.com`;
 
   return headers;
 }

@@ -3,7 +3,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import extractInvoiceRouter from './routes/extract-invoice.js';
-import authRouter from './routes/auth.js';
+import { publicRouter as authPublicRouter, protectedRouter as authProtectedRouter } from './routes/auth.js';
 import invoicesRouter from './routes/invoices.js';
 import spendApprovalsRouter from './routes/spend-approvals.js';
 import usersRouter from './routes/users.js';
@@ -27,11 +27,14 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Auth callback is public (used during login flow)
-app.use(authRouter);
+// Auth callback + dev endpoints are public (used during login flow)
+app.use(authPublicRouter);
 
 // All remaining routes require authentication
 app.use(auth);
+
+// Auth /me and /logout require authentication
+app.use(authProtectedRouter);
 
 app.use(extractInvoiceRouter);
 app.use(invoicesRouter);

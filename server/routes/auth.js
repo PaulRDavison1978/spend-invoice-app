@@ -2,10 +2,11 @@ import { Router } from 'express';
 import prisma from '../lib/prisma.js';
 import { logAudit } from '../services/auditService.js';
 
-const router = Router();
+// Public routes (no auth required)
+const publicRouter = Router();
 
 // POST /api/auth/callback — exchange token info, activate invited user
-router.post('/api/auth/callback', async (req, res, next) => {
+publicRouter.post('/api/auth/callback', async (req, res, next) => {
   try {
     const { email, oid, tid, name } = req.body;
     if (!email || !oid) return res.status(400).json({ error: 'email and oid are required' });
@@ -73,8 +74,56 @@ router.post('/api/auth/callback', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Dev-only endpoints (gated by NODE_ENV)
+publicRouter.get('/api/auth/dev-users', async (req, res, next) => {
+  if (process.env.NODE_ENV === 'production') return res.status(404).json({ error: 'Not found' });
+  try {
+    const users = await prisma.user.findMany({
+      where: { status: 'Active' },
+      include: { role: true },
+      orderBy: { name: 'asc' },
+    });
+    res.json(users.map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role.name })));
+  } catch (err) { next(err); }
+});
+
+publicRouter.post('/api/auth/dev-login', async (req, res, next) => {
+  if (process.env.NODE_ENV === 'production') return res.status(404).json({ error: 'Not found' });
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+      include: {
+        role: {
+          include: { permissions: { include: { permission: true } } },
+        },
+      },
+    });
+
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.status !== 'Active') return res.status(403).json({ error: 'User is not active' });
+
+    await logAudit({ action: 'USER_LOGIN', details: `User logged in via dev bypass with role: ${user.role.name}`, performedBy: user.name, userId: user.id });
+
+    res.json({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role.name,
+      permissions: user.role.permissions.map(rp => rp.permission.key),
+      approvalLimit: user.approvalLimit,
+      isCeo: user.isCeo,
+    });
+  } catch (err) { next(err); }
+});
+
+// Protected routes (require auth middleware)
+const protectedRouter = Router();
+
 // GET /api/auth/me — get current user info from token
-router.get('/api/auth/me', async (req, res) => {
+protectedRouter.get('/api/auth/me', async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
 
   res.json({
@@ -89,11 +138,12 @@ router.get('/api/auth/me', async (req, res) => {
 });
 
 // POST /api/auth/logout
-router.post('/api/auth/logout', async (req, res) => {
+protectedRouter.post('/api/auth/logout', async (req, res) => {
   if (req.user) {
     await logAudit({ action: 'USER_LOGOUT', details: `User logged out`, performedBy: req.user.name, userId: req.user.id });
   }
   res.json({ success: true });
 });
 
-export default router;
+export { publicRouter, protectedRouter };
+export default publicRouter;

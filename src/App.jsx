@@ -4,7 +4,7 @@ import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { Upload, FileText, CheckCircle, XCircle, X, Download, ExternalLink, AlertCircle, LogOut, User, Trash2,  Settings, Home, DollarSign, ArrowRight, ChevronDown, ChevronUp, Lock, Plus, Shield, Mail, BarChart3 } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { loginRequest } from './authConfig.js';
-import { api, setTokenAcquirer } from './api/client.js';
+import { api, setTokenAcquirer, setDevEmail } from './api/client.js';
 
 const PERMISSIONS = {
   invoices: {
@@ -88,12 +88,8 @@ const isMsalAuthenticated = useIsAuthenticated();
 const [user, setUser] = useState(null);
 const [userPermissions, setUserPermissions] = useState([]);
 const [isAuthenticating, setIsAuthenticating] = useState(false);
-const [authStep, setAuthStep] = useState('email');
-const [authEmail, setAuthEmail] = useState('');
-const [authOtp, setAuthOtp] = useState('');
-const [authOtpError, setAuthOtpError] = useState('');
-const [generatedOtp, setGeneratedOtp] = useState('');
-const [otpExpiry, setOtpExpiry] = useState(null);
+const [devUsers, setDevUsers] = useState([]);
+const [selectedDevEmail, setSelectedDevEmail] = useState('');
 const [dataLoaded, setDataLoaded] = useState(false);
 
 // Set up token acquirer for API client
@@ -114,6 +110,80 @@ const acquireToken = useCallback(async () => {
 useEffect(() => {
   setTokenAcquirer(acquireToken);
 }, [acquireToken]);
+
+// MSAL session restore on page refresh
+useEffect(() => {
+  if (!isMsalAuthenticated || accounts.length === 0 || user) return;
+  let cancelled = false;
+  (async () => {
+    try {
+      setIsAuthenticating(true);
+      const token = await acquireToken();
+      if (cancelled || !token) { setIsAuthenticating(false); return; }
+      const account = accounts[0];
+      const idTokenClaims = account.idTokenClaims || {};
+      const API_BASE = import.meta.env.VITE_API_URL || '';
+      const resp = await fetch(`${API_BASE}/api/auth/callback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          email: account.username,
+          oid: idTokenClaims.oid,
+          tid: idTokenClaims.tid,
+          name: account.name,
+        }),
+      });
+      if (cancelled) return;
+      const userData = await resp.json();
+      if (resp.ok) {
+        setUser({ name: userData.name, email: userData.email, id: userData.id, role: userData.role, approvalLimit: userData.approvalLimit || 0, isCeo: userData.isCeo || false });
+        setUserPermissions(userData.permissions || []);
+      }
+    } catch (err) {
+      console.error('MSAL session restore error:', err);
+    } finally {
+      if (!cancelled) setIsAuthenticating(false);
+    }
+  })();
+  return () => { cancelled = true; };
+}, [isMsalAuthenticated, accounts, user, acquireToken]);
+
+// Dev login: fetch available users
+const isDevMode = !import.meta.env.VITE_AZURE_CLIENT_ID;
+useEffect(() => {
+  if (!isDevMode || user) return;
+  const API_BASE = import.meta.env.VITE_API_URL || '';
+  fetch(`${API_BASE}/api/auth/dev-users`)
+    .then(r => r.ok ? r.json() : [])
+    .then(users => {
+      setDevUsers(users);
+      if (users.length > 0) setSelectedDevEmail(users[0].email);
+    })
+    .catch(() => {});
+}, [isDevMode, user]);
+
+const devLogin = async () => {
+  if (!selectedDevEmail) return;
+  setIsAuthenticating(true);
+  try {
+    const API_BASE = import.meta.env.VITE_API_URL || '';
+    const resp = await fetch(`${API_BASE}/api/auth/dev-login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: selectedDevEmail }),
+    });
+    const userData = await resp.json();
+    if (!resp.ok) { alert(userData.error || 'Login failed'); return; }
+    setDevEmail(selectedDevEmail);
+    setUser({ name: userData.name, email: userData.email, id: userData.id, role: userData.role, approvalLimit: userData.approvalLimit || 0, isCeo: userData.isCeo || false });
+    setUserPermissions(userData.permissions || []);
+  } catch (err) {
+    console.error('Dev login error:', err);
+    alert('Login failed');
+  } finally {
+    setIsAuthenticating(false);
+  }
+};
 
 // MSAL login handler
 const msalLogin = async () => {
@@ -491,45 +561,6 @@ const reportData = React.useMemo(() => {
 const [showConfig, setShowConfig] = useState(false);
 const fileInputRef = useRef(null);
 const spendFileInputRef = useRef(null);
-const sendOtpToEmail = async () => { if (!authEmail || !authEmail.includes('@')) { alert('Invalid email'); return;}
-const existingUser = mockUsers.find(u => u.email.toLowerCase() === authEmail.toLowerCase());
-if (!existingUser) { const auditEntry = { id: Date.now(), action: 'LOGIN_FAILED', details: `Failed login attempt for ${authEmail} - Email not found in system`, performedBy: authEmail, performedAt: new Date().toISOString()};
-setAuditLog(prev => [...prev, auditEntry]);
-alert('Email not found. Please contact an administrator to get access.'); return;}
-if (existingUser.status === 'Pending') { const auditEntry = { id: Date.now(), action: 'LOGIN_FAILED', details: `Failed login attempt for ${authEmail} - Account pending activation`, performedBy: authEmail, performedAt: new Date().toISOString()};
-setAuditLog(prev => [...prev, auditEntry]);
-alert('Your account is pending activation. Please check your invitation email.'); return;}
-setIsAuthenticating(true); let otp;
-if (authEmail.toLowerCase() === 'john.doe@company.com') { otp = '123456'; } else if (authEmail.toLowerCase() === 'jane.smith@company.com') { otp = '234567'; } else if (authEmail.toLowerCase() === 'bob.johnson@company.com') { otp = '345678'; } else if (authEmail.toLowerCase() === 'alice.williams@company.com') { otp = '456789'; } else { otp = Math.floor(100000 + Math.random() * 900000).toString();}
-setGeneratedOtp(otp);
-setOtpExpiry(Date.now() + 10 * 60 * 1000); // 10 minutes expiry
-const auditEntry = { id: Date.now(), action: 'OTP_SENT', details: `OTP sent to ${authEmail}`, performedBy: authEmail, performedAt: new Date().toISOString()};
-setAuditLog(prev => [...prev, auditEntry]); setTimeout(() => { setIsAuthenticating(false); setAuthStep('otp');
-console.log(`OTP for ${authEmail}: ${otp}`); }, 1500);};
-const verifyOtpAndLogin = async () => { setAuthOtpError(''); if (!authOtp) { setAuthOtpError('Please enter the OTP'); return;}
-if (authOtp.length !== 6) { setAuthOtpError('OTP must be 6 digits'); return;}
-if (Date.now() > otpExpiry) { setAuthOtpError('OTP has expired. Please request a new one.');
-const auditEntry = { id: Date.now(), action: 'LOGIN_FAILED', details: `Failed login attempt for ${authEmail} - OTP expired`, performedBy: authEmail, performedAt: new Date().toISOString()};
-setAuditLog(prev => [...prev, auditEntry]); setTimeout(() => { setAuthStep('email'); setAuthOtp('');
-setAuthOtpError('');
-setGeneratedOtp(''); setOtpExpiry(null); }, 3000); return;}
-if (authOtp !== generatedOtp) { setAuthOtpError(`Invalid OTP. The correct code for ${authEmail} is shown in the demo box below.`); setAuthOtp('');
-const auditEntry = { id: Date.now(), action: 'LOGIN_FAILED', details: `Failed login attempt for ${authEmail} - Invalid OTP entered`, performedBy: authEmail, performedAt: new Date().toISOString()};
-setAuditLog(prev => [...prev, auditEntry]); return;}
-setIsAuthenticating(true); setTimeout(() => { const loggedInUser = mockUsers.find(u => u.email.toLowerCase() === authEmail.toLowerCase()); if (loggedInUser) { setUser({ name: loggedInUser.name, email: loggedInUser.email, id: loggedInUser.id, role: loggedInUser.role, approvalLimit: loggedInUser.approvalLimit||0, isCeo: loggedInUser.isCeo||false });
-const auditEntry = { id: Date.now(), action: 'USER_LOGIN', details: `User logged in via OTP with role: ${loggedInUser.role}`, performedBy: loggedInUser.name, performedAt: new Date().toISOString()};
-setAuditLog(prev => [...prev, auditEntry]);
-setIsAuthenticating(false);
-setAuthStep('email'); setAuthEmail(''); setAuthOtp('');
-setAuthOtpError('');
-setGeneratedOtp(''); setOtpExpiry(null); } else { setIsAuthenticating(false);
-setAuthOtpError('User not found');
-const auditEntry = { id: Date.now(), action: 'LOGIN_FAILED', details: `Failed login attempt for ${authEmail} - User not found`, performedBy: authEmail, performedAt: new Date().toISOString()};
-setAuditLog(prev => [...prev, auditEntry]);} }, 1000);};
-const resendOtp = () => { sendOtpToEmail();};
-const backToEmailStep = () => { setAuthStep('email'); setAuthOtp('');
-setAuthOtpError('');
-setGeneratedOtp('');};
 const canUploadInvoices = () => hasPermission('invoices.upload');
 const canDeleteInvoices = () => hasPermission('invoices.delete');
 const canApproveReject = () => hasPermission('invoices.approve');
@@ -554,6 +585,7 @@ const getUserDepts = () => { if (!user) return []; if (hasPermission('spend.view
 const logout = async () => {
 try { await api.post('/api/auth/logout'); } catch {}
 try { await msalInstance.logoutPopup(); } catch {}
+setDevEmail(null);
 setUser(null);
 setUserPermissions([]);
 setDataLoaded(false);
@@ -778,26 +810,10 @@ const exportReportCsv = () => {
   const url = window.URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url;
   a.download = `report_${new Date().toISOString().split('T')[0]}.csv`; a.click();
   setAuditLog(prev => [...prev, { id: Date.now(), action: 'REPORT_EXPORTED', details: 'Report data exported to CSV', performedBy: user.name, performedAt: new Date().toISOString() }]);
-}; if (!user) { return ( <div className="min-h-screen bg-gradient-to-br from-blue-600 to-indigo-800 flex items-center justify-center p-6"> <div className="bg-white rounded-2xl shadow-2xl p-12 max-w-md w-full"> <div className="text-center mb-8"> <FileText className="w-16 h-16 text-indigo-600 mx-auto mb-4"/> <h1 className="text-3xl font-bold text-gray-800 mb-2">Invoice Workflow</h1> <p className="text-gray-600">Sign in to manage invoices and approvals</p></div> {authStep === 'email' ? ( <div> <div className="mb-6">
-<label className="block text-sm font-medium text-gray-700 mb-2">Email Address</label> <input type="email" value={authEmail}
-onChange={(e) => setAuthEmail(e.target.value)}
-onKeyPress={(e) => e.key === 'Enter' && sendOtpToEmail()}
-placeholder="you@company.com" className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-disabled={isAuthenticating}/></div> <button
-onClick={sendOtpToEmail}
-disabled={isAuthenticating} className="w-full bg-indigo-600 text-white py-4 rounded-lg font-semibold hover:bg-indigo-700 transition disabled:opacity-50 disabled:cursor-not-allowed" > {isAuthenticating ? ( <div className="flex items-center justify-center space-x-2"> <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div> <span>Sending OTP...</span></div> ) : ( 'Send One-Time Password')}</button></div> ) : ( <div> <div className="mb-6"> <div className="flex items-center justify-between mb-2">
-<label className="block text-sm font-medium text-gray-700">Enter OTP</label> <button
-onClick={backToEmailStep} className="text-xs text-indigo-600 hover:text-indigo-800" > Change email</button></div> <p className="text-sm text-gray-600 mb-3"> Code sent to <strong>{authEmail}</strong></p> <input type="text" value={authOtp} onChange={(e) => { setAuthOtp(e.target.value.replace(/\D/g, '').slice(0, 6));
-setAuthOtpError(''); }}
-onKeyPress={(e) => e.key === 'Enter' && verifyOtpAndLogin()}
-placeholder="000000"
-maxLength={6} className={`w-full px-4 py-3 border rounded-lg text-center text-2xl font-mono tracking-widest focus:outline-none focus:ring-2 ${ authOtpError ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-indigo-500' }`}
-disabled={isAuthenticating}/> {authOtpError && ( <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-lg"> <p className="text-sm text-red-700 font-medium">{authOtpError}</p></div>)}
-<p className="text-xs text-gray-500 mt-2 text-center"> OTP expires in 10 minutes</p></div> <button
-onClick={verifyOtpAndLogin}
-disabled={isAuthenticating || authOtp.length !== 6} className="w-full bg-indigo-600 text-white py-4 rounded-lg font-semibold hover:bg-indigo-700 transition disabled:opacity-50 disabled:cursor-not-allowed mb-3" > {isAuthenticating ? ( <div className="flex items-center justify-center space-x-2"> <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div> <span>Verifying...</span></div> ) : ( 'Verify & Sign In')}</button> <button onClick={resendOtp}
-disabled={isAuthenticating} className="w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-medium hover:bg-gray-300 transition disabled:opacity-50 disabled:cursor-not-allowed" > Resend OTP</button></div>)}
-<div className="mt-6 relative"><div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-300"></div></div><div className="relative flex justify-center text-sm"><span className="px-2 bg-white text-gray-500">or</span></div></div><button onClick={msalLogin} disabled={isAuthenticating} className="mt-6 w-full bg-blue-700 text-white py-4 rounded-lg font-semibold hover:bg-blue-800 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-3">{isAuthenticating ? (<><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div><span>Signing in...</span></>) : (<><svg className="w-5 h-5" viewBox="0 0 23 23"><path fill="#f3f3f3" d="M0 0h11v11H0z"/><path fill="#f35325" d="M0 0h11v11H0z"/><path fill="#81bc06" d="M12 0h11v11H12z"/><path fill="#05a6f0" d="M0 12h11v11H0z"/><path fill="#ffba08" d="M12 12h11v11H12z"/></svg><span>Sign in with Microsoft</span></>)}</button><div className="mt-8 text-center text-sm text-gray-500"> <p>OTP or Microsoft authentication</p></div> <div className="mt-6 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-700"> <p className="font-semibold text-blue-800 mb-1">Demo credentials (OTP):</p> <p>john.doe@company.com / 123456 (Admin) • jane.smith@company.com / 234567 (Finance) • bob.johnson@company.com / 345678 (Approver) • alice.williams@company.com / 456789 (User)</p></div></div></div>);}
+}; if (isAuthenticating && !user) { return ( <div className="min-h-screen bg-gradient-to-br from-blue-600 to-indigo-800 flex items-center justify-center p-6"> <div className="bg-white rounded-2xl shadow-2xl p-12 max-w-md w-full text-center"> <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div> <p className="text-gray-600">Signing in...</p></div></div>);}
+if (!user) { return ( <div className="min-h-screen bg-gradient-to-br from-blue-600 to-indigo-800 flex items-center justify-center p-6"> <div className="bg-white rounded-2xl shadow-2xl p-12 max-w-md w-full"> <div className="text-center mb-8"> <FileText className="w-16 h-16 text-indigo-600 mx-auto mb-4"/> <h1 className="text-3xl font-bold text-gray-800 mb-2">Invoice Workflow</h1> <p className="text-gray-600">Sign in to manage invoices and approvals</p></div>
+{isDevMode ? (<div><h2 className="text-lg font-semibold text-gray-700 mb-4 text-center">Development Login</h2><div className="mb-6"><label className="block text-sm font-medium text-gray-700 mb-2">Select User</label><select value={selectedDevEmail} onChange={(e) => setSelectedDevEmail(e.target.value)} className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">{devUsers.map(u => (<option key={u.id} value={u.email}>{u.name} ({u.email}) — {u.role}</option>))}</select></div><button onClick={devLogin} disabled={isAuthenticating || !selectedDevEmail} className="w-full bg-indigo-600 text-white py-4 rounded-lg font-semibold hover:bg-indigo-700 transition disabled:opacity-50 disabled:cursor-not-allowed">{isAuthenticating ? (<div className="flex items-center justify-center space-x-2"><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div><span>Signing in...</span></div>) : 'Sign in'}</button><div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700 text-center"><p>Development mode — no Azure AD configured</p></div></div>) : (<div><button onClick={msalLogin} disabled={isAuthenticating} className="w-full bg-blue-700 text-white py-4 rounded-lg font-semibold hover:bg-blue-800 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-3">{isAuthenticating ? (<><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div><span>Signing in...</span></>) : (<><svg className="w-5 h-5" viewBox="0 0 23 23"><path fill="#f3f3f3" d="M0 0h11v11H0z"/><path fill="#f35325" d="M0 0h11v11H0z"/><path fill="#81bc06" d="M12 0h11v11H12z"/><path fill="#05a6f0" d="M0 12h11v11H0z"/><path fill="#ffba08" d="M12 12h11v11H12z"/></svg><span>Sign in with Microsoft</span></>)}</button></div>)}
+</div></div>);}
 if (currentPage === 'landing') { const h = new Date().getHours();
 const g = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
 return (<div className={_pg}><div className="max-w-5xl mx-auto"> <div className="bg-white rounded-lg shadow-lg p-6 mb-8"><div className={_fj}> <div className="flex items-center space-x-3"><Home className="w-8 h-8 text-indigo-600"/><div><h1 className="text-2xl font-bold text-gray-800">{g}, {user.name.split(' ')[0]}</h1><p className="text-sm text-gray-500">Dashboard</p></div></div>
