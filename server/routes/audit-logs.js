@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import prisma from '../lib/prisma.js';
+import { logAudit } from '../services/auditService.js';
 
 const router = Router();
 
@@ -38,6 +39,24 @@ router.get('/api/audit-logs', async (req, res, next) => {
     ]);
 
     res.json({ logs, total });
+  } catch (err) { next(err); }
+});
+
+// POST /api/audit-logs
+router.post('/api/audit-logs', async (req, res, next) => {
+  try {
+    const { action, details, metadata } = req.body;
+    if (!action || !details) {
+      return res.status(400).json({ error: 'action and details are required' });
+    }
+    const entry = await logAudit({
+      action,
+      details,
+      performedBy: req.user.name || req.user.email,
+      userId: req.user.id || null,
+      metadata: metadata || null,
+    });
+    res.status(201).json(entry);
   } catch (err) { next(err); }
 });
 
