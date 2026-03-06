@@ -49,10 +49,13 @@ export default function auth(req, res, next) {
       return res.status(401).json({ error: 'Invalid token', details: err.message });
     }
 
-    // Validate issuer matches the tenant ID in the token
+    // Validate issuer matches the tenant ID in the token (v1 or v2 format)
     const tid = decoded.tid;
-    const expectedIssuer = `https://login.microsoftonline.com/${tid}/v2.0`;
-    if (decoded.iss !== expectedIssuer) {
+    const validIssuers = [
+      `https://login.microsoftonline.com/${tid}/v2.0`,
+      `https://sts.windows.net/${tid}/`,
+    ];
+    if (!validIssuers.includes(decoded.iss)) {
       return res.status(401).json({ error: 'Invalid token issuer' });
     }
 
