@@ -295,13 +295,6 @@ const loadData = useCallback(async () => {
 useEffect(() => {
   if (user && !dataLoaded) loadData();
 }, [user, dataLoaded, loadData]);
-useEffect(() => {
-  if (settingsTab === 'audit' && user) {
-    api.get('/api/audit-logs?limit=500').then(data => {
-      if (data?.logs) setAuditLog(prev => { const locals = prev.filter(e => e._local); return [...data.logs, ...locals]; });
-    }).catch(err => console.error('Failed to refresh audit logs:', err));
-  }
-}, [settingsTab, user]);
 const defaultInvoices = [
 { id:9001, invoiceNumber:'INV-2001', vendor:'Adobe Inc.', date:'2025-02-01', dueDate:'2025-03-01', amount:'2350.00', taxAmount:'470.00', department:'Engineering', description:'CC license renewal', submittedDate:'2025-02-01T10:00:00Z', submittedBy:'Jane Smith', lineItems:[], spendApprovalId:null, spendApprovalTitle:null, fileName:'INV-2001.pdf', fileType:'application/pdf' },
 { id:9002, invoiceNumber:'INV-2002', vendor:'Dell Technologies', date:'2025-02-05', dueDate:'2025-03-05', amount:'8200.00', taxAmount:'1640.00', department:'Operations', description:'Laptop refresh x8', submittedDate:'2025-02-05T14:00:00Z', submittedBy:'John Doe', lineItems:[], spendApprovalId:null, spendApprovalTitle:null, fileName:'INV-2002.pdf', fileType:'application/pdf' },
@@ -329,6 +322,13 @@ const [invoiceToDelete, setInvoiceToDelete] = useState(null);
 const [showSettingsPage, setShowSettingsPage] = useState(false);
 const [currentPage, setCurrentPage] = useState('landing');
 const [settingsTab, setSettingsTab] = useState('users');
+useEffect(() => {
+  if (settingsTab === 'audit' && user) {
+    api.get('/api/audit-logs?limit=500').then(data => {
+      if (data?.logs) setAuditLog(prev => { const locals = prev.filter(e => e._local); return [...data.logs, ...locals]; });
+    }).catch(err => console.error('Failed to refresh audit logs:', err));
+  }
+}, [settingsTab, user]);
 const [collapsedLookups, setCollapsedLookups] = useState({});
 const toggleLookup = (key) => setCollapsedLookups(prev => ({...prev, [key]: !prev[key]}));
 const [atoms, setAtoms] = useState([
