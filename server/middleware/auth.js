@@ -42,7 +42,7 @@ export default function auth(req, res, next) {
 
   jwt.verify(token, getSigningKey, {
     algorithms: ['RS256'],
-    audience: clientId,
+    audience: [`api://${clientId}`, clientId],
     // Multi-tenant: we validate issuer per-token below
   }, async (err, decoded) => {
     if (err) {
