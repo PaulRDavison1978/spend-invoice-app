@@ -30,7 +30,7 @@ function renderTemplate(text, variables) {
  * @param {string} templateKey - EmailTemplate.key
  * @param {string} to - recipient email address
  * @param {Record<string, string>} variables - placeholder values
- * @param {{ performedBy?: string, userId?: number }} auditContext
+ * @param {{ performedBy?: string, userId?: number, cc?: string[] }} auditContext
  */
 export async function sendTemplateEmail(templateKey, to, variables, auditContext = {}) {
   try {
@@ -49,21 +49,27 @@ export async function sendTemplateEmail(templateKey, to, variables, auditContext
     const subject = renderTemplate(template.subject, variables);
     const body = renderTemplate(template.body, variables);
 
+    const ccEmails = (auditContext.cc || []).filter(e => e && e.includes('@'));
+
     const message = {
       senderAddress,
       content: { subject, plainText: body },
-      recipients: { to: [{ address: to }] },
+      recipients: {
+        to: [{ address: to }],
+        ...(ccEmails.length > 0 && { cc: ccEmails.map(address => ({ address })) }),
+      },
     };
 
     const poller = await client.beginSend(message);
     const result = await poller.pollUntilDone();
 
+    const ccInfo = ccEmails.length > 0 ? ` (CC: ${ccEmails.join(', ')})` : '';
     await logAudit({
       action: 'EMAIL_SENT',
-      details: `Sent "${templateKey}" email to ${to} — subject: ${subject}`,
+      details: `Sent "${templateKey}" email to ${to}${ccInfo} — subject: ${subject}`,
       performedBy: auditContext.performedBy || 'System',
       userId: auditContext.userId || null,
-      metadata: { templateKey, to, messageId: result?.id },
+      metadata: { templateKey, to, cc: ccEmails, messageId: result?.id },
     });
   } catch (err) {
     console.error(`[EmailService] Failed to send "${templateKey}" to ${to}:`, err.message);

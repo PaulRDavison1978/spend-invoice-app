@@ -117,6 +117,7 @@ model SpendApproval {
   exceptional   String    @default("No")
   timeSensitive Boolean   @default(false) @map("time_sensitive")
   justification String?
+  ccRecipients  String?   @map("cc_recipients")
 
   approver      User?     @relation("ApproverApprovals", fields: [approverId], references: [id], onDelete: SetNull)
   invoices      Invoice[]
