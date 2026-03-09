@@ -1,6 +1,18 @@
 import { PrismaClient } from '@prisma/client';
+import crypto from 'node:crypto';
 
 const prisma = new PrismaClient();
+
+function seedEncrypt(plaintext) {
+  const hex = process.env.ENCRYPTION_KEY;
+  if (!hex || hex.length !== 64) return null;
+  const key = Buffer.from(hex, 'hex');
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv, { authTagLength: 16 });
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`;
+}
 
 async function main() {
   // --- Permissions ---
@@ -22,6 +34,8 @@ async function main() {
     { key: 'settings.manage_users',   description: 'Invite, remove, and change user roles' },
     { key: 'settings.view_lookups',   description: 'Access the settings area and view lookup tables' },
     { key: 'settings.manage_lookups', description: 'Add, edit, and deactivate lookup values' },
+    { key: 'budget.manage_all',      description: 'Create, edit, and submit budgets for any function/department' },
+    { key: 'budget.manage_own',      description: 'Create, edit, and submit budgets for functions where you are the approver' },
   ];
 
   const permissions = {};
@@ -39,17 +53,17 @@ async function main() {
     {
       name: 'Admin',
       isDefault: true,
-      permissions: ['invoices.view_all','invoices.upload','invoices.delete','invoices.approve','invoices.assign_all','spend.create','spend.approve','spend.view_all','reports.view','reports.export','settings.manage_users','settings.view_lookups','settings.manage_lookups'],
+      permissions: ['invoices.view_all','invoices.upload','invoices.delete','invoices.approve','invoices.assign_all','spend.create','spend.approve','spend.view_all','reports.view','reports.export','settings.manage_users','settings.view_lookups','settings.manage_lookups','budget.manage_all'],
     },
     {
       name: 'Finance',
       isDefault: true,
-      permissions: ['invoices.view_all','invoices.upload','invoices.delete','invoices.approve','invoices.assign_all','spend.create','spend.approve','spend.view_all','reports.view','reports.export','settings.view_lookups'],
+      permissions: ['invoices.view_all','invoices.upload','invoices.delete','invoices.approve','invoices.assign_all','spend.create','spend.approve','spend.view_all','reports.view','reports.export','settings.view_lookups','budget.manage_all'],
     },
     {
       name: 'Approver',
       isDefault: true,
-      permissions: ['invoices.view_own','invoices.approve','invoices.assign_own','spend.create','spend.approve','spend.view_dept','reports.view'],
+      permissions: ['invoices.view_own','invoices.approve','invoices.assign_own','spend.create','spend.approve','spend.view_dept','reports.view','budget.manage_own'],
     },
     {
       name: 'User',
@@ -249,6 +263,52 @@ async function main() {
       update: {},
       create: { id: invoiceData.indexOf(inv) + 9001, ...inv },
     });
+  }
+
+  // --- Budgets ---
+  const createdFunctions = {};
+  const allFunctions = await prisma.function.findMany();
+  for (const f of allFunctions) { createdFunctions[f.name] = f; }
+
+  const engBudget = await prisma.budget.create({
+    data: { title: 'Engineering FY2026 Budget', year: 2026, functionId: createdFunctions['Engineering'].id, createdById: createdUsers['Bob Johnson'].id, status: 'Submitted', submittedAt: new Date('2026-01-15T09:00:00Z') },
+  });
+  const opsBudget = await prisma.budget.create({
+    data: { title: 'Operations FY2026 Budget', year: 2026, functionId: createdFunctions['Operations'].id, createdById: createdUsers['Jane Smith'].id, status: 'Submitted', submittedAt: new Date('2026-01-20T10:00:00Z') },
+  });
+  const mktBudget = await prisma.budget.create({
+    data: { title: 'Sales & Marketing FY2026 Budget', year: 2026, functionId: createdFunctions['Sales & Marketing'].id, createdById: createdUsers['Bob Johnson'].id, status: 'Draft' },
+  });
+
+  // --- Budget Line Items ---
+  const budgetLineItems = [
+    { budgetId: engBudget.id, type: 'BAU', businessUnit: 'Engineering', serviceCategory: 'Licenses / Software', licence: 'Adobe Creative Cloud Enterprise', costCentre: 'CC200', region: 'UK', vendor: 'Adobe Inc.', contractEndDate: '01/07/2026', contractValue: 2400, currency: 'GBP', eurAnnual: 2760, monthlyBudget: { Jan: 230, Feb: 230, Mar: 230, Apr: 230, May: 230, Jun: 230, Jul: 230, Aug: 230, Sep: 230, Oct: 230, Nov: 230, Dec: 230 }, spendApprovalId: createdSpends['SA-0001-ENG-CC200-UK'].id },
+    { budgetId: engBudget.id, type: 'BAU', businessUnit: 'Engineering', serviceCategory: 'Licenses / Software', licence: 'AWS Reserved Instances', costCentre: 'CC200', region: 'US', vendor: 'Amazon Web Services', contractEndDate: '31/12/2026', contractValue: 15000, currency: 'USD', eurAnnual: 12750, monthlyBudget: { Jan: 1062.5, Feb: 1062.5, Mar: 1062.5, Apr: 1062.5, May: 1062.5, Jun: 1062.5, Jul: 1062.5, Aug: 1062.5, Sep: 1062.5, Oct: 1062.5, Nov: 1062.5, Dec: 1062.5 }, spendApprovalId: createdSpends['SA-0002-ENG-CC200-US'].id },
+    { budgetId: engBudget.id, type: 'BAU', businessUnit: 'Engineering', serviceCategory: 'Licenses / Software', licence: 'AWS CloudWatch Monitoring', costCentre: 'CC200', region: 'US', vendor: 'Amazon Web Services', contractEndDate: '31/12/2026', contractValue: 3600, currency: 'USD', eurAnnual: 3060, monthlyBudget: { Jan: 255, Feb: 255, Mar: 255, Apr: 255, May: 255, Jun: 255, Jul: 255, Aug: 255, Sep: 255, Oct: 255, Nov: 255, Dec: 255 }, spendApprovalId: createdSpends['SA-0002-ENG-CC200-US'].id },
+    { budgetId: engBudget.id, type: 'BAU', businessUnit: 'Engineering', serviceCategory: 'Licenses / Software', licence: 'GCP Compute Engine', costCentre: 'CC200', region: 'US', vendor: 'Google Cloud Platform', contractEndDate: '31/12/2026', contractValue: 10000, currency: 'USD', eurAnnual: 8500, monthlyBudget: { Jan: 708.33, Feb: 708.33, Mar: 708.33, Apr: 708.33, May: 708.33, Jun: 708.33, Jul: 708.33, Aug: 708.33, Sep: 708.33, Oct: 708.33, Nov: 708.33, Dec: 708.33 }, spendApprovalId: createdSpends['SA-0006-ENG-CC200-US'].id },
+    { budgetId: engBudget.id, type: 'New', businessUnit: 'Engineering', serviceCategory: 'Licenses / Software', licence: 'GCP BigQuery Analytics', costCentre: 'CC200', region: 'US', vendor: 'Google Cloud Platform', contractEndDate: '31/12/2026', contractValue: 4800, currency: 'USD', eurAnnual: 4080, monthlyBudget: { Jan: 340, Feb: 340, Mar: 340, Apr: 340, May: 340, Jun: 340, Jul: 340, Aug: 340, Sep: 340, Oct: 340, Nov: 340, Dec: 340 }, spendApprovalId: createdSpends['SA-0006-ENG-CC200-US'].id },
+    { budgetId: engBudget.id, type: 'BAU', businessUnit: 'Engineering', serviceCategory: 'Licenses / Software', licence: 'GitHub Enterprise', costCentre: 'CC200', region: 'UK', vendor: 'GitHub', contractEndDate: '31/03/2026', contractValue: 6000, currency: 'USD', eurAnnual: 5100, monthlyBudget: { Jan: 425, Feb: 425, Mar: 425, Apr: 425, May: 425, Jun: 425, Jul: 425, Aug: 425, Sep: 425, Oct: 425, Nov: 425, Dec: 425 }, spendApprovalId: null },
+    { budgetId: opsBudget.id, type: 'BAU', businessUnit: 'Operations', serviceCategory: 'Hardware / Equipment', licence: 'Dell Laptop Replacement Programme', costCentre: 'CC500', region: 'UK', vendor: 'Dell Technologies', contractEndDate: '31/12/2026', contractValue: 8500, currency: 'GBP', eurAnnual: 9775, monthlyBudget: { Jan: 814.58, Feb: 814.58, Mar: 814.58, Apr: 814.58, May: 814.58, Jun: 814.58, Jul: 814.58, Aug: 814.58, Sep: 814.58, Oct: 814.58, Nov: 814.58, Dec: 814.58 }, spendApprovalId: createdSpends['SA-0005-OPS-CC500-UK'].id },
+    { budgetId: opsBudget.id, type: 'New', businessUnit: 'Operations', serviceCategory: 'Service / Support', licence: 'Managed IT Support Contract', costCentre: 'CC500', region: 'UK', vendor: 'Atera', contractEndDate: '31/12/2026', contractValue: 12000, currency: 'GBP', eurAnnual: 13800, monthlyBudget: { Jan: 1150, Feb: 1150, Mar: 1150, Apr: 1150, May: 1150, Jun: 1150, Jul: 1150, Aug: 1150, Sep: 1150, Oct: 1150, Nov: 1150, Dec: 1150 }, spendApprovalId: null },
+    { budgetId: mktBudget.id, type: 'BAU', businessUnit: 'Sales & Marketing', serviceCategory: 'Other', licence: 'Conference & Event Travel Budget', costCentre: 'CC400', region: 'EU', vendor: 'Various', contractEndDate: '31/12/2026', contractValue: 5000, currency: 'EUR', eurAnnual: 5000, monthlyBudget: { Jan: 416.67, Feb: 416.67, Mar: 416.67, Apr: 416.67, May: 416.67, Jun: 416.67, Jul: 416.67, Aug: 416.67, Sep: 416.67, Oct: 416.67, Nov: 416.67, Dec: 416.67 }, spendApprovalId: createdSpends['SA-0003-MKT-CC400-EU'].id },
+  ];
+
+  for (const bl of budgetLineItems) {
+    await prisma.budgetLineItem.create({ data: bl });
+  }
+
+  // --- Anthropic API Key (from env) ---
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (apiKey) {
+    const encryptedValue = seedEncrypt(apiKey);
+    if (encryptedValue) {
+      await prisma.appSetting.upsert({
+        where: { key: 'anthropic_api_key' },
+        update: { value: encryptedValue, encrypted: true, updatedBy: 'seed' },
+        create: { key: 'anthropic_api_key', value: encryptedValue, encrypted: true, updatedBy: 'seed' },
+      });
+      console.log('Anthropic API key seeded from ANTHROPIC_API_KEY env var.');
+    }
   }
 
   console.log('Seed data created successfully.');

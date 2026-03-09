@@ -13,6 +13,9 @@ import auditLogsRouter from './routes/audit-logs.js';
 import emailTemplatesRouter from './routes/email-templates.js';
 import spendAlertsRouter from './routes/spend-alerts.js';
 import settingsRouter from './routes/settings.js';
+import budgetLinesRouter from './routes/budget-lines.js';
+import budgetsRouter from './routes/budgets.js';
+import budgetImportRouter from './routes/budget-import.js';
 import auth from './middleware/auth.js';
 import errorHandler from './middleware/errorHandler.js';
 
@@ -46,6 +49,9 @@ app.use(auditLogsRouter);
 app.use(emailTemplatesRouter);
 app.use(spendAlertsRouter);
 app.use(settingsRouter);
+app.use(budgetLinesRouter);
+app.use(budgetsRouter);
+app.use(budgetImportRouter);
 
 // Centralized error handler
 app.use(errorHandler);

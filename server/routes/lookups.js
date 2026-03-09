@@ -12,6 +12,7 @@ const modelMap = {
   categories:   { model: 'spendCategory', hasCode: false },
   functions:    { model: 'function',      hasCode: false, extra: ['approverId'] },
   projects:     { model: 'project',       hasCode: false, extra: ['description'] },
+  'business-units': { model: 'businessUnit', hasCode: false },
 };
 
 function getDelegate(type) {
@@ -50,10 +51,12 @@ router.post('/api/lookups/:type', async (req, res, next) => {
       }
     }
 
-    const item = await delegate.create({ data });
+    const include = config.model === 'function' ? { approver: { select: { id: true, name: true } } } : undefined;
+    const item = await delegate.create({ data, include });
 
     const performedBy = req.user?.name || 'System';
-    await logAudit({ action: 'LOOKUP_CREATED', details: `Created ${req.params.type} "${data.name}"`, performedBy, userId: req.user?.id });
+    const label = config.hasCode && item.code ? `${item.code} — ${item.name}` : item.name;
+    await logAudit({ action: `${req.params.type.toUpperCase().replace(/-/g, '_')}_CREATED`, details: `Created ${req.params.type}: ${label}`, performedBy, userId: req.user?.id });
 
     res.status(201).json(item);
   } catch (err) { next(err); }
@@ -75,10 +78,12 @@ router.patch('/api/lookups/:type/:id', async (req, res, next) => {
       }
     }
 
-    const item = await delegate.update({ where: { id: parseInt(req.params.id) }, data });
+    const include = config.model === 'function' ? { approver: { select: { id: true, name: true } } } : undefined;
+    const item = await delegate.update({ where: { id: parseInt(req.params.id) }, data, include });
 
     const performedBy = req.user?.name || 'System';
-    await logAudit({ action: 'LOOKUP_UPDATED', details: `Updated ${req.params.type} #${req.params.id}`, performedBy, userId: req.user?.id });
+    const label = config.hasCode && item.code ? `${item.code} — ${item.name}` : item.name;
+    await logAudit({ action: `${req.params.type.toUpperCase().replace(/-/g, '_')}_UPDATED`, details: `Updated ${req.params.type}: ${label}`, performedBy, userId: req.user?.id });
 
     res.json(item);
   } catch (err) { next(err); }
@@ -98,7 +103,8 @@ router.patch('/api/lookups/:type/:id/toggle', async (req, res, next) => {
     const item = await delegate.update({ where: { id }, data: { active: !current.active } });
 
     const performedBy = req.user?.name || 'System';
-    await logAudit({ action: 'LOOKUP_TOGGLED', details: `Toggled ${req.params.type} #${id} to ${item.active ? 'active' : 'inactive'}`, performedBy, userId: req.user?.id });
+    const label = item.code ? `${item.code} — ${item.name}` : item.name;
+    await logAudit({ action: `${req.params.type.toUpperCase().replace(/-/g, '_')}_${item.active ? 'ACTIVATED' : 'DEACTIVATED'}`, details: `${item.active ? 'Activated' : 'Deactivated'} ${req.params.type}: ${label}`, performedBy, userId: req.user?.id });
 
     res.json(item);
   } catch (err) { next(err); }

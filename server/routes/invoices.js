@@ -25,9 +25,20 @@ router.post('/api/invoices', async (req, res, next) => {
   try {
     const {
       invoiceNumber, vendor, date, dueDate, amount, taxAmount,
-      department, description, submittedBy, fileName, fileUrl,
+      department, businessUnit, description, submittedBy, fileName, fileUrl,
       supplierJson, customerJson, currency, lineItems,
     } = req.body;
+
+    // Check for duplicate invoice (same invoiceNumber + vendor)
+    if (invoiceNumber) {
+      const existing = await prisma.invoice.findFirst({
+        where: { invoiceNumber, vendor: { equals: vendor, mode: 'insensitive' } },
+        select: { id: true },
+      });
+      if (existing) {
+        return res.status(409).json({ error: `Duplicate invoice: ${invoiceNumber} from ${vendor} already exists`, duplicate: true });
+      }
+    }
 
     const invoice = await prisma.invoice.create({
       data: {
@@ -38,6 +49,7 @@ router.post('/api/invoices', async (req, res, next) => {
         amount: parseFloat(amount) || 0,
         taxAmount: parseFloat(taxAmount) || 0,
         department,
+        businessUnit: businessUnit || null,
         description,
         submittedBy: submittedBy || req.user?.name || 'Unknown',
         fileName,
@@ -145,6 +157,58 @@ router.patch('/api/invoices/:id/unlink', async (req, res, next) => {
     }
 
     res.json({ ...updated, thresholdAlert });
+  } catch (err) { next(err); }
+});
+
+// POST /api/invoices/bulk-import — bulk create invoices from spreadsheet data
+router.post('/api/invoices/bulk-import', async (req, res, next) => {
+  try {
+    const items = req.body;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Request body must be a non-empty array of invoices' });
+    }
+
+    // Check for duplicates against existing invoices (by invoiceNumber + vendor)
+    const incomingNumbers = items.map(i => i.invoiceNumber).filter(Boolean);
+    const existing = incomingNumbers.length > 0
+      ? await prisma.invoice.findMany({ where: { invoiceNumber: { in: incomingNumbers } }, select: { invoiceNumber: true, vendor: true } })
+      : [];
+    const existingSet = new Set(existing.map(e => `${e.invoiceNumber}|||${(e.vendor || '').toLowerCase()}`));
+
+    const created = [];
+    const skipped = [];
+    for (const item of items) {
+      const key = `${item.invoiceNumber}|||${(item.vendor || '').toLowerCase()}`;
+      if (item.invoiceNumber && existingSet.has(key)) {
+        skipped.push({ invoiceNumber: item.invoiceNumber, vendor: item.vendor, reason: 'Duplicate' });
+        continue;
+      }
+      // Also track within the batch to prevent intra-batch duplicates
+      if (item.invoiceNumber) existingSet.add(key);
+
+      const invoice = await prisma.invoice.create({
+        data: {
+          invoiceNumber: item.invoiceNumber || `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          vendor: item.vendor || 'Unknown',
+          date: item.date || new Date().toISOString().split('T')[0],
+          dueDate: item.dueDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          amount: parseFloat(item.amount) || 0,
+          taxAmount: parseFloat(item.taxAmount) || 0,
+          department: item.department || null,
+          businessUnit: item.businessUnit || null,
+          description: item.description || null,
+          submittedBy: item.submittedBy || req.user?.name || 'Bulk Import',
+          currency: item.currency || null,
+        },
+        include: { lineItems: true },
+      });
+      created.push(invoice);
+    }
+
+    const performedBy = req.user?.name || 'System';
+    await logAudit({ action: 'INVOICES_BULK_IMPORTED', details: `${created.length} invoice(s) bulk imported, ${skipped.length} duplicate(s) skipped`, performedBy, userId: req.user?.id });
+
+    res.status(201).json({ created, skipped });
   } catch (err) { next(err); }
 });
 

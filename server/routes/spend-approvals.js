@@ -12,6 +12,7 @@ router.get('/api/spend-approvals', async (req, res, next) => {
       include: {
         approver: { select: { id: true, name: true } },
         invoices: { select: { id: true, invoiceNumber: true, amount: true } },
+        budgetLines: { select: { id: true, licence: true, eurAnnual: true, vendor: true } },
       },
       orderBy: { id: 'asc' },
     });
@@ -94,6 +95,7 @@ router.get('/api/spend-approvals/:id', async (req, res, next) => {
       include: {
         approver: { select: { id: true, name: true } },
         invoices: { select: { id: true, invoiceNumber: true, amount: true, vendor: true } },
+        budgetLines: { select: { id: true, licence: true, eurAnnual: true, vendor: true, currency: true, type: true } },
       },
     });
     if (!spend) return res.status(404).json({ error: 'Spend approval not found' });

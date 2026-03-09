@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useMsal, useIsAuthenticated } from '@azure/msal-react';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
-import { Upload, FileText, CheckCircle, XCircle, X, Download, ExternalLink, AlertCircle, LogOut, User, Trash2,  Settings, Home, DollarSign, ArrowRight, ChevronDown, ChevronUp, Lock, Plus, Shield, Mail, BarChart3 } from 'lucide-react';
+import { Upload, FileText, CheckCircle, XCircle, X, Download, ExternalLink, AlertCircle, LogOut, User, Trash2, Settings, Home, DollarSign, ArrowRight, ChevronDown, ChevronUp, Lock, Plus, Shield, Mail, BarChart3, Wallet, Edit3, Send, Eye, MessageSquare, Sparkles, Loader2, Search, Filter, FileSpreadsheet } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import * as XLSX from 'xlsx';
 import { loginRequest } from './authConfig.js';
 import { api, setTokenAcquirer, setDevEmail } from './api/client.js';
 
@@ -36,6 +37,13 @@ const PERMISSIONS = {
       'reports.export': { label: 'Export reports',  description: 'Export report data to CSV' },
     }
   },
+  budget: {
+    label: 'Budgets',
+    permissions: {
+      'budget.manage_all': { label: 'Manage all budgets',  description: 'Create, edit, and submit budgets for any function/department' },
+      'budget.manage_own': { label: 'Manage own budgets',  description: 'Create, edit, and submit budgets for functions where you are the approver' },
+    }
+  },
   settings: {
     label: 'Settings & Administration',
     permissions: {
@@ -47,9 +55,9 @@ const PERMISSIONS = {
 };
 
 const defaultRoles = [
-  { id:'admin',    name:'Admin',    isDefault:true, permissions:['invoices.view_all','invoices.upload','invoices.delete','invoices.approve','invoices.assign_all','spend.create','spend.approve','spend.view_all','reports.view','reports.export','settings.manage_users','settings.view_lookups','settings.manage_lookups'] },
-  { id:'finance',  name:'Finance',  isDefault:true, permissions:['invoices.view_all','invoices.upload','invoices.delete','invoices.approve','invoices.assign_all','spend.create','spend.approve','spend.view_all','reports.view','reports.export','settings.view_lookups'] },
-  { id:'approver', name:'Approver', isDefault:true, permissions:['invoices.view_own','invoices.approve','invoices.assign_own','spend.create','spend.approve','spend.view_dept','reports.view'] },
+  { id:'admin',    name:'Admin',    isDefault:true, permissions:['invoices.view_all','invoices.upload','invoices.delete','invoices.approve','invoices.assign_all','spend.create','spend.approve','spend.view_all','reports.view','reports.export','settings.manage_users','settings.view_lookups','settings.manage_lookups','budget.manage_all'] },
+  { id:'finance',  name:'Finance',  isDefault:true, permissions:['invoices.view_all','invoices.upload','invoices.delete','invoices.approve','invoices.assign_all','spend.create','spend.approve','spend.view_all','reports.view','reports.export','settings.view_lookups','budget.manage_all'] },
+  { id:'approver', name:'Approver', isDefault:true, permissions:['invoices.view_own','invoices.approve','invoices.assign_own','spend.create','spend.approve','spend.view_dept','reports.view','budget.manage_own'] },
   { id:'user',     name:'User',     isDefault:true, permissions:['invoices.view_own','invoices.assign_own','spend.create','spend.view_own'] },
 ];
 
@@ -225,22 +233,26 @@ const msalLogin = async () => {
 const loadData = useCallback(async () => {
   if (!user) return;
   try {
-    const [invoicesData, spendsData, usersData, rolesData, lookupsData, templatesData, auditData] = await Promise.all([
+    const [invoicesData, spendsData, usersData, rolesData, lookupsData, templatesData, auditData, budgetLinesData, budgetReportData, budgetsData] = await Promise.all([
       api.get('/api/invoices'),
       api.get('/api/spend-approvals'),
       api.get('/api/users'),
       api.get('/api/roles'),
       Promise.all([
-        api.get('/api/lookups/atoms'),
-        api.get('/api/lookups/cost-centres'),
-        api.get('/api/lookups/regions'),
-        api.get('/api/lookups/currencies'),
-        api.get('/api/lookups/categories'),
-        api.get('/api/lookups/functions'),
-        api.get('/api/lookups/projects'),
+        api.get('/api/lookups/atoms').catch(() => []),
+        api.get('/api/lookups/cost-centres').catch(() => []),
+        api.get('/api/lookups/regions').catch(() => []),
+        api.get('/api/lookups/currencies').catch(() => []),
+        api.get('/api/lookups/categories').catch(() => []),
+        api.get('/api/lookups/functions').catch(() => []),
+        api.get('/api/lookups/projects').catch(() => []),
+        api.get('/api/lookups/business-units').catch(() => []),
       ]),
-      api.get('/api/email-templates'),
-      api.get('/api/audit-logs?limit=500'),
+      api.get('/api/email-templates').catch(() => []),
+      api.get('/api/audit-logs?limit=500').catch(() => ({ logs: [] })),
+      api.get('/api/budget-lines').catch(() => []),
+      api.get('/api/budget-report').catch(() => []),
+      api.get('/api/budgets').catch(() => []),
     ]);
 
     // Transform invoice data for frontend compatibility
@@ -275,7 +287,7 @@ const loadData = useCallback(async () => {
 
     setRoles(rolesData);
 
-    const [atomsData, costCentresData, regionsData, currenciesData, categoriesData, functionsData, projectsData] = lookupsData;
+    const [atomsData, costCentresData, regionsData, currenciesData, categoriesData, functionsData, projectsData, businessUnitsData] = lookupsData;
     setAtoms(atomsData);
     setCostCentres(costCentresData);
     setRegions(regionsData);
@@ -283,8 +295,12 @@ const loadData = useCallback(async () => {
     setCategories(categoriesData);
     setFunctions(functionsData.map(f => ({ ...f, approverId: f.approver?.id || null, approver: f.approver?.name || '' })));
     setProjects(projectsData);
+    setBusinessUnits(businessUnitsData || []);
     setEmailTemplates(templatesData);
     if (auditData?.logs) setAuditLog(prev => { const locals = prev.filter(e => e._local); return [...auditData.logs, ...locals]; });
+    setBudgetLines(budgetLinesData || []);
+    setBudgetReport(budgetReportData || []);
+    setBudgets(budgetsData || []);
 
     setDataLoaded(true);
   } catch (err) {
@@ -323,13 +339,14 @@ const [showSettingsPage, setShowSettingsPage] = useState(false);
 const [currentPage, setCurrentPage] = useState('landing');
 const [settingsTab, setSettingsTab] = useState('users');
 useEffect(() => {
-  if (settingsTab === 'audit' && user) {
+  if (currentPage === 'settings' && settingsTab === 'audit' && user) {
     api.get('/api/audit-logs?limit=500').then(data => {
-      if (data?.logs) setAuditLog(prev => { const locals = prev.filter(e => e._local); return [...data.logs, ...locals]; });
+      if (data?.logs) setAuditLog(data.logs);
     }).catch(err => console.error('Failed to refresh audit logs:', err));
   }
-}, [settingsTab, user]);
-const [collapsedLookups, setCollapsedLookups] = useState({});
+}, [settingsTab, currentPage, user]);
+const refreshAuditLog = (action, details) => { setAuditLog(prev => [{ id: Date.now() + Math.random(), action: action || 'LOOKUP_CHANGED', details: details || 'Lookup updated', performedBy: user?.name || 'System', performedAt: new Date().toISOString() }, ...prev]); };
+const [collapsedLookups, setCollapsedLookups] = useState({atoms:true,costCentres:true,regions:true,currencies:true,categories:true,businessUnits:true,functions:true,projects:true});
 const toggleLookup = (key) => setCollapsedLookups(prev => ({...prev, [key]: !prev[key]}));
 const [atoms, setAtoms] = useState([
 { id:1, code:'ENG', name:'Engineering', active:true },
@@ -394,6 +411,9 @@ const [projects, setProjects] = useState([
 ]);
 const [editProject, setEditProject] = useState(null);
 const [newProject, setNewProject] = useState({ name:'', description:'' });
+const [businessUnits, setBusinessUnits] = useState([]);
+const [editBU, setEditBU] = useState(null);
+const [newBU, setNewBU] = useState({ name:'' });
 const [editFunction, setEditFunction] = useState(null);
 const [newFunction, setNewFunction] = useState({ name:'', approver:'' });
 const [showRoleTooltip, setShowRoleTooltip] = useState(false);
@@ -404,6 +424,8 @@ const [showRemoveConfirmation, setShowRemoveConfirmation] = useState(false);
 const [userToRemove, setUserToRemove] = useState(null);
 const [showGdprModal, setShowGdprModal] = useState(false);
 const [showEscalationModal, setShowEscalationModal] = useState(null);
+const [commentModal, setCommentModal] = useState(null);
+const [commentText, setCommentText] = useState('');
 const [userToAnonymize, setUserToAnonymize] = useState(null);
 const [gdprConfirmEmail, setGdprConfirmEmail] = useState('');
 const [auditSearchTerm, setAuditSearchTerm] = useState('');
@@ -428,15 +450,34 @@ const [extractedDataBatch, setExtractedDataBatch] = useState([]);
 const [isProcessing, setIsProcessing] = useState(false);
 const [processingProgress, setProcessingProgress] = useState({ current: 0, total: 0 });
 const [hoveredInvoice, setHoveredInvoice] = useState(null);
+const [bulkImport, setBulkImport] = useState({ rows: [], fileName: '', mappings: null, step: null });
+const bulkFileRef = useRef(null);
 const [showColumnSelector, setShowColumnSelector] = useState(false);
 const _uk = (s) => `viewPrefs_${user?.email || 'default'}_${s}`;
-const [visibleColumns, setVisibleColumns] = usePersistedState(_uk('inv_cols'), { invoiceNumber: true, vendor: true, subtotal: true, tax: true, total: true, spendApproval: true, file: true, date: false, dueDate: false, submittedBy: false });
+const [visibleColumns, setVisibleColumns] = usePersistedState(_uk('inv_cols'), { invoiceNumber: true, vendor: true, businessUnit: false, subtotal: true, tax: true, total: true, spendApproval: true, file: true, date: false, dueDate: false, submittedBy: false });
 const [groupBy, setGroupBy] = usePersistedState(_uk('inv_group'), 'none');
 const [spendForm, setSpendForm] = useState({ cc:'', title:'', currency:'', approver:'', approverId:null, amount:'', category:'', atom:'', vendor:'', costCentre:'', region:'', project:'', timeSensitive:false, exceptional:'', justification:'', department:'', originInvoiceId: null });
 const [spendSubmitted, setSpendSubmitted] = useState(false);
 const [spendView, setSpendView] = useState('list');
 const [spendAlerts, setSpendAlerts] = useState([]);
 const dismissSpendAlert = (alertId) => setSpendAlerts(prev => prev.filter(a => a.id !== alertId));
+const [budgetLines, setBudgetLines] = useState([]);
+const [budgetReport, setBudgetReport] = useState([]);
+const [budgetReportView, setBudgetReportView] = useState('table');
+const [budgets, setBudgets] = useState([]);
+const [budgetView, setBudgetView] = useState('list'); // list, detail, form
+const [selectedBudget, setSelectedBudget] = useState(null);
+const [budgetForm, setBudgetForm] = useState({ title: '', year: new Date().getFullYear(), functionId: '' });
+const [spreadLines, setSpreadLines] = useState({});
+const [aiImport, setAiImport] = useState({ open: false, loading: false, error: null, result: null, fileName: '' });
+const [bliSearch, setBliSearch] = useState('');
+const [bliGroupBy, setBliGroupBy] = useState('');
+const [bliFilters, setBliFilters] = useState({ type: '', businessUnit: '', region: '', currency: '', vendor: '' });
+const canManageBudgets = () => hasPermission('budget.manage_all') || hasPermission('budget.manage_own');
+const getUserFunctions = () => {
+  if (hasPermission('budget.manage_all')) return functions.filter(f => f.active);
+  return functions.filter(f => f.active && f.approver === user?.name);
+};
 const [selectedSpend, setSelectedSpend] = useState(null);
 const [selectedSpendIds, setSelectedSpendIds] = useState([]);
 const [spendSearch, setSpendSearch] = useState('');
@@ -460,6 +501,7 @@ const removeApiKey = async () => { try { await api.delete('/api/settings/api-key
 const testApiKey = async () => { setApiKeyTestStatus('testing'); setApiKeyTestMessage('Testing API key...'); try { const canvas = document.createElement('canvas'); canvas.width = 1; canvas.height = 1; const dataUrl = canvas.toDataURL('image/png'); const base64 = dataUrl.split(',')[1]; const result = await api.post('/api/extract-invoice', { file: base64, mediaType: 'image/png' }); if (result.success) { setApiKeyTestStatus('success'); setApiKeyTestMessage('API key is valid! Claude AI extraction is ready to use.'); } else { setApiKeyTestStatus('success'); setApiKeyTestMessage('API key accepted. Claude AI extraction is ready to use.'); } } catch (err) { if (err.message?.includes('configuration_error') || err.message?.includes('No Anthropic API key')) { setApiKeyTestStatus('error'); setApiKeyTestMessage('No API key configured. Please save a key first.'); } else if (err.status === 401) { setApiKeyTestStatus('error'); setApiKeyTestMessage('Invalid API key. Please check your key and try again.'); } else { setApiKeyTestStatus('error'); setApiKeyTestMessage('Test failed: ' + err.message); } } };
 const extractWithClaude = async (file) => { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = async () => { try { const base64 = reader.result.split(',')[1]; const result = await api.post('/api/extract-invoice', { file: base64, mediaType: file.type }); if (!result.success) { reject(new Error(result.error || 'Extraction failed')); return; } const d = result.data; resolve({ invoiceNumber: d.invoice?.invoice_number || d.invoiceNumber || `INV-${Math.floor(Math.random() * 10000)}`, vendor: d.supplier?.company || d.vendor || 'Unknown Vendor', date: d.invoice?.invoice_date || d.date || new Date().toISOString().split('T')[0], dueDate: d.invoice?.due_date || d.dueDate || new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0], amount: String(parseFloat(d.totals?.subtotal ?? d.amount) || 0).replace(/[^0-9.]/g, '') || '0.00', taxAmount: String(parseFloat(d.totals?.vat_amount ?? d.taxAmount) || 0).replace(/[^0-9.]/g, '') || '0.00', description: d.invoice?.title || d.description || '', department: d.department || 'General', lineItems: Array.isArray(d.line_items) ? d.line_items.map(li => ({ category: li.category || '', description: li.description || '', quantity: Number(li.quantity) || 0, rate: Number(li.unit_rate) || 0, amount: Number(li.amount) || 0 })) : Array.isArray(d.lineItems) ? d.lineItems.map(li => ({ description: li.description || '', quantity: Number(li.quantity) || 0, rate: Number(li.rate) || 0, amount: Number(li.amount) || 0 })) : [], supplier: d.supplier || null, customer: d.customer || null, paymentTerms: d.invoice?.payment_terms || '', currency: d.invoice?.currency || '', vatRate: d.totals?.vat_rate ?? null, subtotal: String(parseFloat(d.totals?.subtotal) || 0) || '0.00', totalAmount: String(parseFloat(d.totals?.total) || 0) || '0.00', bankDetails: d.bank_details || null, fileName: file.name, fileUrl: reader.result, fileType: file.type }); } catch (err) { reject(err); } }; reader.onerror = () => reject(new Error('Failed to read file')); reader.readAsDataURL(file); }); };
 const [pendingMatches, setPendingMatches] = useState([]);
+const [pendingBudgetMatches, setPendingBudgetMatches] = useState([]);
 const findMatches = () => { const results = [];
 const isRestricted = !hasPermission('invoices.assign_all');
 const unlinkedInvs = invoices.filter(inv => inv && !inv.spendApprovalId && (!isRestricted || inv.submittedBy === user.name));
@@ -491,6 +533,36 @@ checkSpendThreshold(spendId, toEur(invoiceTotal(inv), inv.currency||sp.currency)
 logAuditRemote('INVOICE_MATCHED', `Invoice ${inv.invoiceNumber} matched to spend approval "${sp.title}" (€${toEur(sp.amount, sp.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})})`);
 setPendingMatches(prev => prev.map(m => m.spendId===spendId ? {...m, suggestions: m.suggestions.filter(s=>s.invoiceId!==invoiceId)} : m).filter(m=>m.suggestions.length>0));};
 const dismissSpendMatch = (spendId) => { setPendingMatches(prev => prev.filter(m => m.spendId !== spendId)); };
+const findBudgetMatches = () => { const results = [];
+const unlinkedBl = budgetLines.filter(bl => !bl.spendApprovalId);
+spendApprovals.filter(sp => sp && sp.status === 'Approved').forEach(sp => { const suggestions = [];
+const spVendor = (sp.vendor||'').toLowerCase(); const spAmtEur = toEur(parseFloat(sp.amount)||0, sp.currency);
+const linkedBl = budgetLines.filter(bl => bl.spendApprovalId === sp.id);
+const totalBudgetEur = linkedBl.reduce((sum,bl) => sum + (parseFloat(bl.eurAnnual)||0), 0);
+unlinkedBl.forEach(bl => { let score = 0; let reasons = [];
+const blVendor = (bl.vendor||'').toLowerCase();
+if (blVendor && spVendor && (blVendor.includes(spVendor) || spVendor.includes(blVendor))) { score += 35; reasons.push('Vendor match'); }
+else if (blVendor && spVendor) { const words = spVendor.split(/\s+/); if (words.some(w => w.length > 2 && blVendor.includes(w))) { score += 15; reasons.push('Partial vendor'); } }
+if (bl.region && sp.region && bl.region.toLowerCase() === sp.region.toLowerCase()) { score += 15; reasons.push('Region match'); }
+if (bl.costCentre && sp.costCentre && bl.costCentre.toLowerCase() === sp.costCentre.toLowerCase()) { score += 15; reasons.push('Cost centre match'); }
+const blEur = parseFloat(bl.eurAnnual)||0;
+if (blEur > 0 && spAmtEur > 0) { const diff = Math.abs(blEur - spAmtEur) / spAmtEur; if (diff <= 0.15) { score += 20; reasons.push(`Amount ±${(diff*100).toFixed(0)}%`); } }
+const blLic = (bl.licence||'').toLowerCase(); const spTitle = (sp.title||'').toLowerCase();
+if (blLic && spTitle && (blLic.includes(spTitle) || spTitle.includes(blLic))) { score += 25; reasons.push('Title/licence match'); }
+else { const titleWords = spTitle.split(/\s+/).filter(w => w.length > 3); if (titleWords.some(w => blLic.includes(w))) { score += 10; reasons.push('Partial title match'); } }
+if (score >= 15) suggestions.push({ budgetLineId: bl.id, licence: bl.licence||'', vendor: bl.vendor||'', eurAnnual: parseFloat(bl.eurAnnual)||0, currency: bl.currency||'EUR', region: bl.region||'', costCentre: bl.costCentre||'', businessUnit: bl.businessUnit||'', serviceCategory: bl.serviceCategory||bl.licence||'', type: bl.type||'BAU', score, reasons }); });
+if (suggestions.length > 0) results.push({ spendId: sp.id, spendRef: sp.ref||'', spendTitle: sp.title||'', spendVendor: sp.vendor||'', spendCurrency: sp.currency||'', spendAmount: sp.amount||'0', spendCategory: sp.category||'', spendRegion: sp.region||'', linkedBudgetCount: linkedBl.length, totalBudgetEur, suggestions: suggestions.sort((a,b) => b.score - a.score) }); }); return results;};
+const runBudgetMatch = () => { const results = findBudgetMatches();
+setPendingBudgetMatches(results);
+if (results.length > 0) { setCurrentPage('budget-matching'); } else { alert('No matching budget items found for any approved spend approvals.'); }};
+const acceptBudgetMatch = async (budgetLineId, spendId) => { try {
+await api.patch(`/api/budget-lines/${budgetLineId}/link`, { spendApprovalId: spendId });
+setBudgetLines(prev => prev.map(b => b.id===budgetLineId ? {...b, spendApprovalId: spendId} : b));
+const bl = budgetLines.find(b => b.id===budgetLineId); const sp = spendApprovals.find(s => s.id===spendId);
+logAuditRemote('BUDGET_LINE_MATCHED', `Budget line "${bl?.licence}" matched to spend approval "${sp?.title}"`);
+setPendingBudgetMatches(prev => prev.map(m => m.spendId===spendId ? {...m, suggestions: m.suggestions.filter(s=>s.budgetLineId!==budgetLineId)} : m).filter(m=>m.suggestions.length>0));
+} catch(err) { alert('Failed to link: '+err.message); }};
+const dismissBudgetMatch = (spendId) => { setPendingBudgetMatches(prev => prev.filter(m => m.spendId !== spendId)); };
 const unlinkInvoice = (invoiceId) => { const inv = invoices.find(i => i.id === invoiceId); if (!inv) return;
 setInvoices(prev => prev.map(i => i.id === invoiceId ? {...i, spendApprovalId: null, spendApprovalTitle: null} : i));
 logAuditRemote('INVOICE_UNLINKED', `Invoice ${inv.invoiceNumber} unlinked from spend approval`);};
@@ -539,7 +611,7 @@ if (alerts.length > 0) setSpendAlerts(alerts);
 }, [user]);
 const [showFilterPanel, setShowFilterPanel] = useState(false);
 const [filters, setFilters] = usePersistedState(_uk('inv_filters'), { vendor: 'all', dateFrom: '', dateTo: '', amountMin: '', amountMax: '', submittedBy: 'all', searchTerm: '' });
-const [reportFilters, setReportFilters] = usePersistedState(_uk('report_filters'), { dateFrom: '', dateTo: '', department: 'all', approver: 'all', region: 'all', project: 'all', costCentre: 'all', atom: 'all', vendor: 'all' });
+const [reportFilters, setReportFilters] = usePersistedState(_uk('report_filters'), { dateFrom: '', dateTo: '', department: 'all', approver: 'all', region: 'all', project: 'all', costCentre: 'all', atom: 'all', vendor: 'all', budget: 'all' });
 const [chartOrder, setChartOrder] = usePersistedState(_uk('chart_order'), ['spendByCategory','spendByDept','invoiceVolume','approvedVsInvoiced','statusBreakdown','invoicedByRegion']);
 const CHART_COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316'];
 const reportData = React.useMemo(() => {
@@ -724,6 +796,7 @@ const processInvoiceBatch = async () => { if (extractedDataBatch.length === 0) r
 setIsProcessing(true);
 setProcessingProgress({ current: 0, total: extractedDataBatch.length });
 const newInvoices = [];
+const duplicates = [];
 for (let i = 0; i < extractedDataBatch.length; i++) { const extractedData = extractedDataBatch[i];
 setProcessingProgress({ current: i + 1, total: extractedDataBatch.length });
 try {
@@ -746,15 +819,91 @@ const saved = await api.post('/api/invoices', {
 });
 const newInvoice = { ...saved, amount: String(saved.amount), taxAmount: String(saved.taxAmount), submittedDate: saved.createdAt || new Date().toISOString(), submittedBy: saved.submittedBy, spendApprovalId: null, spendApprovalTitle: null, fileName: extractedData.fileName, fileUrl: extractedData.fileUrl, fileType: extractedData.fileType };
 newInvoices.push(newInvoice);
-} catch (err) { console.error(`Failed to save invoice ${extractedData.invoiceNumber}:`, err); alert(`Failed to save invoice ${extractedData.invoiceNumber}: ${err.message}`); }}
+} catch (err) {
+  if (err.message?.includes('Duplicate invoice') || err.status === 409) { duplicates.push({ invoiceNumber: extractedData.invoiceNumber, vendor: extractedData.vendor }); }
+  else { console.error(`Failed to save invoice ${extractedData.invoiceNumber}:`, err); alert(`Failed to save invoice ${extractedData.invoiceNumber}: ${err.message}`); }
+}}
 const allInvoices = [...invoices, ...newInvoices];
 setInvoices(allInvoices);
 setExtractedDataBatch([]);
 setSelectedFiles([]);
 setIsProcessing(false);
 setProcessingProgress({ current: 0, total: 0 });
-if (fileInputRef.current) { fileInputRef.current.value = '';}};
+if (fileInputRef.current) { fileInputRef.current.value = '';}
+if (duplicates.length > 0 && newInvoices.length > 0) { alert(`${newInvoices.length} invoice(s) imported. ${duplicates.length} duplicate(s) skipped: ${duplicates.map(d => d.invoiceNumber).join(', ')}`); }
+else if (duplicates.length > 0 && newInvoices.length === 0) { alert(`All ${duplicates.length} invoice(s) were duplicates and skipped: ${duplicates.map(d => d.invoiceNumber).join(', ')}`); }};
 const removeFromBatch = (idx) => { setExtractedDataBatch(prev => { const next = prev.filter((_, i) => i !== idx); if (next.length === 0 && fileInputRef.current) fileInputRef.current.value = ''; return next; }); setSelectedFiles(prev => prev.filter((_, i) => i !== idx)); };
+const handleBulkFile = (e) => {
+  const file = e.target.files?.[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (evt) => {
+    try {
+      const data = new Uint8Array(evt.target.result);
+      const wb = XLSX.read(data, { type: 'array' });
+      const sheetName = wb.SheetNames[0];
+      const sheet = wb.Sheets[sheetName];
+      const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      if (json.length === 0) { alert('No data found in file'); return; }
+      const headers = Object.keys(json[0]);
+      const targetFields = ['invoiceNumber','vendor','date','dueDate','amount','taxAmount','currency','department','businessUnit','description'];
+      const fieldLabels = { invoiceNumber:'Invoice #', vendor:'Vendor', date:'Invoice Date', dueDate:'Due Date', amount:'Subtotal/Amount', taxAmount:'Tax Amount', currency:'Currency', department:'Department', businessUnit:'Business Unit', description:'Description' };
+      const autoMap = {};
+      const aliases = { invoiceNumber: ['invoice','inv','invoice_number','invoice #','invoice_no','inv_no','invoice no','inv #','invoicenumber'],
+        vendor: ['vendor','supplier','vendor_name','supplier_name','company'],
+        date: ['date','invoice_date','invoice date','inv_date','invoicedate'],
+        dueDate: ['due','due_date','due date','duedate','payment_date','payment date'],
+        amount: ['amount','subtotal','sub_total','sub total','net','net_amount','net amount','total'],
+        taxAmount: ['tax','vat','tax_amount','tax amount','vat_amount','gst','taxamount'],
+        currency: ['currency','curr','ccy'],
+        department: ['department','dept','dept.','department_name'],
+        businessUnit: ['business_unit','business unit','businessunit','bu','unit'],
+        description: ['description','desc','details','memo','notes','narrative'] };
+      targetFields.forEach(f => {
+        const aliasList = aliases[f] || [f.toLowerCase()];
+        const match = headers.find(h => aliasList.includes(h.toLowerCase().trim()));
+        if (match) autoMap[f] = match;
+      });
+      setBulkImport({ rows: json, fileName: file.name, mappings: autoMap, step: 'map', headers, targetFields, fieldLabels });
+    } catch (err) { alert('Failed to parse file: ' + err.message); }
+  };
+  reader.readAsArrayBuffer(file);
+  if (bulkFileRef.current) bulkFileRef.current.value = '';
+};
+const setBulkMapping = (field, header) => {
+  setBulkImport(prev => ({ ...prev, mappings: { ...prev.mappings, [field]: header || undefined } }));
+};
+const bulkImportPreview = () => {
+  if (!bulkImport.mappings?.invoiceNumber && !bulkImport.mappings?.vendor) { alert('Please map at least Invoice # or Vendor'); return; }
+  setBulkImport(prev => ({ ...prev, step: 'preview' }));
+};
+const getMappedRows = () => {
+  const m = bulkImport.mappings || {};
+  return bulkImport.rows.map(row => {
+    const mapped = {};
+    Object.entries(m).forEach(([field, header]) => { if (header) mapped[field] = String(row[header] ?? '').trim(); });
+    if (mapped.amount) mapped.amount = String(parseFloat(String(mapped.amount).replace(/[^0-9.\-]/g,'')) || 0);
+    if (mapped.taxAmount) mapped.taxAmount = String(parseFloat(String(mapped.taxAmount).replace(/[^0-9.\-]/g,'')) || 0);
+    return mapped;
+  }).filter(r => r.invoiceNumber || r.vendor);
+};
+const confirmBulkImport = async () => {
+  const rows = getMappedRows();
+  if (rows.length === 0) { alert('No valid rows to import'); return; }
+  setIsProcessing(true);
+  setProcessingProgress({ current: 0, total: rows.length });
+  try {
+    const withUser = rows.map(r => ({ ...r, submittedBy: user.name }));
+    const result = await api.post('/api/invoices/bulk-import', withUser);
+    const newInvoices = result.created.map(s => ({ ...s, amount: String(s.amount), taxAmount: String(s.taxAmount), submittedDate: s.submittedDate || new Date().toISOString(), spendApprovalId: null, lineItems: [] }));
+    setInvoices(prev => [...prev, ...newInvoices]);
+    const totalAmount = newInvoices.reduce((sum, inv) => sum + (parseFloat(inv.amount) || 0) + (parseFloat(inv.taxAmount) || 0), 0);
+    const vendors = [...new Set(newInvoices.map(inv => inv.vendor).filter(Boolean))];
+    const skipped = result.skipped || [];
+    setBulkImport({ rows: [], fileName: '', mappings: null, step: 'success', summary: { count: newInvoices.length, totalAmount, vendors, fileName: bulkImport.fileName, skipped } });
+  } catch (err) { alert('Bulk import failed: ' + err.message); }
+  setIsProcessing(false);
+  setProcessingProgress({ current: 0, total: 0 });
+};
 const toggleColumnVisibility = (columnKey) => { setVisibleColumns(prev => ({ ...prev, [columnKey]: !prev[columnKey] }));};
 const updateFilter = (key, value) => { setFilters(prev => ({ ...prev, [key]: value }));
 logAuditLocal('FILTER_APPLIED', `Filter applied: ${key} = ${value}`);};
@@ -769,7 +918,7 @@ if (filters.amountMax && parseFloat(invoice.amount) > parseFloat(filters.amountM
 if (filters.submittedBy !== 'all' && invoice.submittedBy !== filters.submittedBy) { return false;}
 if (filters.searchTerm) { const searchLower = filters.searchTerm.toLowerCase();
 const matchesSearch =
-invoice.invoiceNumber.toLowerCase().includes(searchLower) || invoice.vendor.toLowerCase().includes(searchLower) || (invoice.description && invoice.description.toLowerCase().includes(searchLower));
+invoice.invoiceNumber.toLowerCase().includes(searchLower) || invoice.vendor.toLowerCase().includes(searchLower) || (invoice.description && invoice.description.toLowerCase().includes(searchLower)) || (invoice.businessUnit && invoice.businessUnit.toLowerCase().includes(searchLower));
 if (!matchesSearch) { return false;}} return true; });};
 const getGroupedInvoices = () => { const filteredInvoices = getFilteredInvoices();
 if (groupBy === 'none') { return { 'All Invoices': filteredInvoices };} const grouped = {};
@@ -786,8 +935,8 @@ if (filters.amountMin) count++;
 if (filters.amountMax) count++;
 if (filters.submittedBy !== 'all') count++;
 if (filters.searchTerm) count++; return count;};
-const exportToExcel = () => { const headers = ['Invoice #', 'Vendor', 'Date', 'Currency', 'Subtotal', 'Tax', 'Total', 'Submitted By'];
-const rows = invoices.map(inv => [ inv.invoiceNumber, inv.vendor, inv.date, inv.currency || '', inv.amount, inv.taxAmount, inv.totalAmount || (parseFloat(inv.amount) + parseFloat(inv.taxAmount)).toFixed(2), inv.submittedBy || 'N/A' ]);
+const exportToExcel = () => { const headers = ['Invoice #', 'Vendor', 'Business Unit', 'Date', 'Currency', 'Subtotal', 'Tax', 'Total', 'Submitted By'];
+const rows = invoices.map(inv => [ inv.invoiceNumber, inv.vendor, inv.businessUnit || '', inv.date, inv.currency || '', inv.amount, inv.taxAmount, inv.totalAmount || (parseFloat(inv.amount) + parseFloat(inv.taxAmount)).toFixed(2), inv.submittedBy || 'N/A' ]);
 const csvContent = [ headers.join(','), ...rows.map(row => row.join(',')) ].join('\n');
 const blob = new Blob([csvContent], { type: 'text/csv' });
 const url = window.URL.createObjectURL(blob);
@@ -823,13 +972,460 @@ if (!user) { return ( <div className="min-h-screen bg-gradient-to-br from-blue-6
 </div></div>);}
 if (currentPage === 'landing') { const h = new Date().getHours();
 const g = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
-return (<div className={_pg}><div className="max-w-5xl mx-auto"> <div className="bg-white rounded-lg shadow-lg p-6 mb-8"><div className={_fj}> <div className="flex items-center space-x-3"><Home className="w-8 h-8 text-indigo-600"/><div><h1 className="text-2xl font-bold text-gray-800">{g}, {user.name.split(' ')[0]}</h1><p className="text-sm text-gray-500">Dashboard</p></div></div>
-<div className="flex items-center space-x-4"><div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 rounded-lg"><User className="w-5 h-5 text-indigo-600"/><div className="text-sm"><p className="font-semibold text-gray-800">{user.name}</p><p className="text-xs text-gray-600">{user.role}</p></div></div> <button onClick={logout} className="flex items-center space-x-2 px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200"><LogOut className="w-4 h-4"/><span>Logout</span></button></div> </div></div> <div className={`grid grid-cols-1 ${(() => { let cols = 2; if (hasPermission('reports.view')) cols++; if (hasPermission('settings.view_lookups') || hasPermission('settings.manage_users')) cols++; return cols >= 4 ? 'md:grid-cols-2 lg:grid-cols-4' : cols === 3 ? 'md:grid-cols-3' : 'md:grid-cols-2'; })()} gap-6`}>
+return (<div className={_pg}><div className="w-full"> <div className="bg-white rounded-lg shadow-lg p-6 mb-8"><div className={_fj}> <div className="flex items-center space-x-3"><Home className="w-8 h-8 text-indigo-600"/><div><h1 className="text-2xl font-bold text-gray-800">{g}, {user.name.split(' ')[0]}</h1><p className="text-sm text-gray-500">Dashboard</p></div></div>
+<div className="flex items-center space-x-4"><div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 rounded-lg"><User className="w-5 h-5 text-indigo-600"/><div className="text-sm"><p className="font-semibold text-gray-800">{user.name}</p><p className="text-xs text-gray-600">{user.role}</p></div></div> <button onClick={logout} className="flex items-center space-x-2 px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200"><LogOut className="w-4 h-4"/><span>Logout</span></button></div> </div></div> <div className={`grid grid-cols-1 ${(() => { let cols = 2; if (canManageBudgets()) cols++; if (hasPermission('reports.view')) cols++; if (hasPermission('settings.view_lookups') || hasPermission('settings.manage_users')) cols++; return cols >= 5 ? 'md:grid-cols-3 lg:grid-cols-5' : cols >= 4 ? 'md:grid-cols-2 lg:grid-cols-4' : cols === 3 ? 'md:grid-cols-3' : 'md:grid-cols-2'; })()} gap-6`}>
 <button onClick={() => setCurrentPage('invoices')} className="bg-white rounded-xl shadow-lg hover:shadow-xl border-2 border-transparent hover:border-indigo-400 text-left p-8"><div className="flex items-center justify-center w-16 h-16 bg-indigo-100 rounded-2xl mb-6"><FileText className="w-8 h-8 text-indigo-600"/></div><h2 className="text-xl font-bold text-gray-800 mb-2">Invoices</h2><p className="text-gray-500 text-sm mb-6">{hasPermission('invoices.upload') ? 'Upload, extract, and manage invoices.' : 'View invoices you have uploaded.'}</p><div className="flex items-center text-indigo-600 font-semibold text-sm"><span>Open Invoices</span><ArrowRight className="w-4 h-4 ml-2"/></div></button>
 <button onClick={() => setCurrentPage('spend-approval')} className="bg-white rounded-xl shadow-lg hover:shadow-xl border-2 border-transparent hover:border-green-400 text-left p-8 relative"><div className="flex items-center justify-center w-16 h-16 bg-green-100 rounded-2xl mb-6"><DollarSign className="w-8 h-8 text-green-600"/></div>{spendAlerts.length > 0 && <span className="absolute top-4 right-4 bg-red-600 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center">{spendAlerts.length}</span>}<h2 className="text-xl font-bold text-gray-800 mb-2">Spend Approvals</h2><p className="text-gray-500 text-sm mb-6">Create, track, and manage spend approval requests.</p><div className="flex items-center text-green-600 font-semibold text-sm"><span>Open Spend Approvals</span><ArrowRight className="w-4 h-4 ml-2"/></div></button>
+{canManageBudgets() && <button onClick={() => { setBudgetView('list'); setCurrentPage('budgets'); }} className="bg-white rounded-xl shadow-lg hover:shadow-xl border-2 border-transparent hover:border-teal-400 text-left p-8"><div className="flex items-center justify-center w-16 h-16 bg-teal-100 rounded-2xl mb-6"><Wallet className="w-8 h-8 text-teal-600"/></div><h2 className="text-xl font-bold text-gray-800 mb-2">Budgets</h2><p className="text-gray-500 text-sm mb-6">{hasPermission('budget.manage_all') ? 'Create and manage budgets for all departments.' : 'Create and manage budgets for your functions.'}</p><div className="flex items-center text-teal-600 font-semibold text-sm"><span>Open Budgets</span><ArrowRight className="w-4 h-4 ml-2"/></div></button>}
 {hasPermission('reports.view') && <button onClick={() => setCurrentPage('reports')} className="bg-white rounded-xl shadow-lg hover:shadow-xl border-2 border-transparent hover:border-amber-400 text-left p-8"><div className="flex items-center justify-center w-16 h-16 bg-amber-100 rounded-2xl mb-6"><BarChart3 className="w-8 h-8 text-amber-600"/></div><h2 className="text-xl font-bold text-gray-800 mb-2">Reports</h2><p className="text-gray-500 text-sm mb-6">{hasPermission('reports.export') ? 'View dashboards, KPIs, and export report data.' : 'View dashboards and KPI summaries.'}</p><div className="flex items-center text-amber-600 font-semibold text-sm"><span>Open Reports</span><ArrowRight className="w-4 h-4 ml-2"/></div></button>}
 {(hasPermission('settings.view_lookups') || hasPermission('settings.manage_users')) && (<button onClick={() => { setSettingsTab(hasPermission('settings.manage_users') ? 'users' : 'atoms'); setCurrentPage('settings'); }} className="bg-white rounded-xl shadow-lg hover:shadow-xl border-2 border-transparent hover:border-purple-400 text-left p-8"><div className="flex items-center justify-center w-16 h-16 bg-purple-100 rounded-2xl mb-6"><Settings className="w-8 h-8 text-purple-600"/></div><h2 className="text-xl font-bold text-gray-800 mb-2">Settings</h2><p className="text-gray-500 text-sm mb-6">{canManagePermissions() ? 'Manage users, roles, lookups, and audit logs.' : 'View lookups and audit logs.'}</p><div className="flex items-center text-purple-600 font-semibold text-sm"><span>Open Settings</span><ArrowRight className="w-4 h-4 ml-2"/></div></button>)}
 </div> </div></div>);}
+if (currentPage === 'budgets') { if (!canManageBudgets()) { setCurrentPage('landing'); return null; }
+const budgetNavBar = (<div className="bg-white rounded-lg shadow-lg p-6 mb-6"><div className={_fj}><div className="flex items-center space-x-3"><Wallet className="w-8 h-8 text-teal-600"/><h1 className="text-2xl font-bold text-gray-800">Budgets</h1></div>
+<div className="flex items-center space-x-4"><div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 rounded-lg"><User className="w-5 h-5 text-indigo-600"/><div className="text-sm"><p className="font-semibold text-gray-800">{user.name}</p><p className="text-xs text-gray-600">{user.role}</p></div></div>
+<button onClick={() => setCurrentPage('landing')} className="flex items-center space-x-2 px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200"><Home className="w-4 h-4"/><span>Dashboard</span></button>
+<button onClick={logout} className="flex items-center space-x-2 px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200"><LogOut className="w-4 h-4"/><span>Logout</span></button></div></div></div>);
+
+const createBudget = async () => {
+  if (!budgetForm.title || !budgetForm.year || !budgetForm.functionId) { alert('Fill all required fields'); return; }
+  try {
+    const saved = await api.post('/api/budgets', { title: budgetForm.title, year: parseInt(budgetForm.year), functionId: parseInt(budgetForm.functionId) });
+    setBudgets(prev => [saved, ...prev]);
+    setBudgetForm({ title: '', year: new Date().getFullYear(), functionId: '' });
+    setBudgetView('list');
+  } catch (err) { alert('Failed to create budget: ' + (err.message || 'Unknown error')); }
+};
+
+const deleteBudget = async (id) => {
+  if (!confirm('Delete this draft budget?')) return;
+  try { await api.delete(`/api/budgets/${id}`); setBudgets(prev => prev.filter(b => b.id !== id)); if (selectedBudget?.id === id) { setSelectedBudget(null); setBudgetView('list'); } } catch (err) { alert('Failed to delete: ' + err.message); }
+};
+
+const submitBudget = async (id) => {
+  if (!confirm('Submit this budget? Once submitted it cannot be edited.')) return;
+  try {
+    const updated = await api.post(`/api/budgets/${id}/submit`);
+    setBudgets(prev => prev.map(b => b.id === id ? { ...b, status: 'Submitted', submittedAt: updated.submittedAt } : b));
+    if (selectedBudget?.id === id) setSelectedBudget(prev => ({ ...prev, status: 'Submitted', submittedAt: updated.submittedAt }));
+  } catch (err) { alert('Failed to submit: ' + err.message); }
+};
+
+const openBudgetDetail = async (budget) => {
+  try {
+    const detail = await api.get(`/api/budgets/${budget.id}`);
+    setSpreadLines({});
+    setSelectedBudget(detail);
+    setBudgetView('detail');
+  } catch (err) { alert('Failed to load budget: ' + err.message); }
+};
+
+const refreshBudgetReport = () => {
+  const bId = reportFilters.budget !== 'all' ? reportFilters.budget : '';
+  api.get(`/api/budget-report${bId ? `?budgetId=${bId}` : ''}`).then(d => setBudgetReport(d||[])).catch(() => {});
+};
+
+const addBudgetLineItem = async (budgetId, item) => {
+  try {
+    const created = await api.post(`/api/budgets/${budgetId}/line-items`, item);
+    const newItem = Array.isArray(created) ? created[0] : created;
+    setSelectedBudget(prev => ({ ...prev, lineItems: [...(prev.lineItems || []), newItem] }));
+    setBudgets(prev => prev.map(b => b.id === budgetId ? { ...b, lineItemCount: (b.lineItemCount||0)+1, totalEurAnnual: (b.totalEurAnnual||0) + (parseFloat(newItem.eurAnnual)||0) } : b));
+    refreshBudgetReport();
+  } catch (err) { alert('Failed to add line item: ' + err.message); }
+};
+
+const deleteBudgetLineItem = async (budgetId, lineId) => {
+  try {
+    await api.delete(`/api/budgets/${budgetId}/line-items/${lineId}`);
+    setSelectedBudget(prev => ({ ...prev, lineItems: prev.lineItems.filter(li => li.id !== lineId) }));
+    setBudgets(prev => prev.map(b => b.id === budgetId ? { ...b, lineItemCount: Math.max(0, (b.lineItemCount||1)-1) } : b));
+    refreshBudgetReport();
+  } catch (err) { alert('Failed to delete line item: ' + err.message); }
+};
+
+const addBulkBudgetLines = async (budgetId, items) => {
+  try {
+    const created = await api.post(`/api/budgets/${budgetId}/line-items`, items);
+    const newItems = Array.isArray(created) ? created : [created];
+    setSelectedBudget(prev => ({ ...prev, lineItems: [...(prev.lineItems || []), ...newItems] }));
+    const addedTotal = newItems.reduce((s, li) => s + (parseFloat(li.eurAnnual)||0), 0);
+    setBudgets(prev => prev.map(b => b.id === budgetId ? { ...b, lineItemCount: (b.lineItemCount||0)+newItems.length, totalEurAnnual: (b.totalEurAnnual||0)+addedTotal } : b));
+    refreshBudgetReport();
+    return newItems.length;
+  } catch (err) { alert('Failed to import lines: ' + err.message); return 0; }
+};
+
+const handleAiImport = async (file) => {
+  setAiImport({ open: true, loading: true, error: null, result: null, fileName: file.name });
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    const res = await api.post('/api/budgets/ai-map', { file: base64, fileName: file.name });
+    if (res.success) {
+      setAiImport(prev => ({ ...prev, loading: false, result: res }));
+    } else {
+      setAiImport(prev => ({ ...prev, loading: false, error: res.error || 'Unknown error' }));
+    }
+  } catch (err) {
+    setAiImport(prev => ({ ...prev, loading: false, error: err.message || 'Failed to process file' }));
+  }
+};
+
+const confirmAiImport = async (budgetId, rows) => {
+  const count = await addBulkBudgetLines(budgetId, rows);
+  if (count > 0) setAiImport({ open: false, loading: false, error: null, result: null, fileName: '' });
+};
+
+// Budget form view
+if (budgetView === 'form') { return (<div className={_pg}><div className="w-full max-w-4xl mx-auto">{budgetNavBar}
+<div className="bg-white rounded-xl shadow-lg p-8">
+<div className={_fj+" mb-6"}><h2 className="text-xl font-bold text-gray-800">Create New Budget</h2><button onClick={() => setBudgetView('list')} className="text-sm text-indigo-600 hover:text-indigo-800 font-semibold">← Back to Budgets</button></div>
+<div className="space-y-4">
+<div><label className="block text-sm font-medium text-gray-700 mb-1">Title <span className="text-red-500">*</span></label><input type="text" value={budgetForm.title} onChange={e => setBudgetForm(p => ({...p, title: e.target.value}))} placeholder="e.g. Engineering FY2026 Budget" className={`w-full ${_i}`}/></div>
+<div className="grid grid-cols-2 gap-4">
+<div><label className="block text-sm font-medium text-gray-700 mb-1">Year <span className="text-red-500">*</span></label><input type="number" value={budgetForm.year} onChange={e => setBudgetForm(p => ({...p, year: e.target.value}))} min="2024" max="2030" className={`w-full ${_i}`}/></div>
+<div><label className="block text-sm font-medium text-gray-700 mb-1">Function / Department <span className="text-red-500">*</span></label><select value={budgetForm.functionId} onChange={e => setBudgetForm(p => ({...p, functionId: e.target.value}))} className={`w-full ${_i}`}><option value="">Select function...</option>{getUserFunctions().map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></div>
+</div>
+<div className="flex justify-end pt-4"><button onClick={createBudget} disabled={!budgetForm.title || !budgetForm.year || !budgetForm.functionId} className="px-6 py-2.5 bg-teal-600 text-white rounded-lg hover:bg-teal-700 font-semibold disabled:opacity-50 disabled:cursor-not-allowed">Create Budget</button></div>
+</div></div></div></div>); }
+
+// Budget detail view
+if (budgetView === 'detail' && selectedBudget) { const sb = selectedBudget; const isDraft = sb.status === 'Draft';
+const totalEur = (sb.lineItems || []).reduce((sum, li) => sum + (parseFloat(li.eurAnnual) || 0), 0);
+const lineItemFormDefault = { type: 'BAU', businessUnit: '', serviceCategory: '', licence: '', costCentre: '', region: '', vendor: '', contractEndDate: '', contractValue: '', currency: '', eurAnnual: '', comments: '', monthlyBudget: null };
+return (<div className={_pg}><div className="w-full">{budgetNavBar}
+<div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+<div className={_fj+" mb-4"}>
+<div><h2 className="text-xl font-bold text-gray-800">{sb.title}</h2>
+<p className="text-sm text-gray-500">{sb.function?.name} — {sb.year} — Created by {sb.createdBy?.name} on {new Date(sb.createdAt).toLocaleDateString()}</p></div>
+<div className="flex items-center space-x-3">
+<span className={`px-3 py-1.5 rounded-full text-sm font-semibold ${sb.status === 'Draft' ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'}`}>{sb.status === 'Draft' ? 'Draft' : `Submitted ${sb.submittedAt ? new Date(sb.submittedAt).toLocaleDateString() : ''}`}</span>
+<button onClick={() => { setBudgetView('list'); setSelectedBudget(null); }} className="text-sm text-indigo-600 hover:text-indigo-800 font-semibold">← Back</button>
+</div></div>
+<div className="grid grid-cols-3 gap-4 mb-4">
+<div className="bg-teal-50 rounded-lg p-4 border border-teal-200"><p className="text-xs font-medium text-teal-600 uppercase">Total Annual (EUR)</p><p className="text-2xl font-bold text-teal-800">€{totalEur.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</p></div>
+<div className="bg-blue-50 rounded-lg p-4 border border-blue-200"><p className="text-xs font-medium text-blue-600 uppercase">Line Items</p><p className="text-2xl font-bold text-blue-800">{(sb.lineItems||[]).length}</p></div>
+<div className="bg-purple-50 rounded-lg p-4 border border-purple-200"><p className="text-xs font-medium text-purple-600 uppercase">Monthly Avg</p><p className="text-2xl font-bold text-purple-800">€{(totalEur/12).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</p></div>
+</div>
+{isDraft && (<div className="flex items-center space-x-3 mb-4">
+<button onClick={() => (sb.lineItems||[]).length > 0 ? submitBudget(sb.id) : alert('Add at least one line item before submitting')} className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold"><Send className="w-4 h-4"/><span>Submit Budget</span></button>
+<button onClick={() => addBudgetLineItem(sb.id, { licence: '', type: 'BAU', currency: 'EUR', eurAnnual: 0, monthlyBudget: { Jan:0,Feb:0,Mar:0,Apr:0,May:0,Jun:0,Jul:0,Aug:0,Sep:0,Oct:0,Nov:0,Dec:0 } })} className="flex items-center space-x-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-semibold"><Plus className="w-4 h-4"/><span>Add Line Item</span></button>
+<label className="flex items-center space-x-2 px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 font-semibold cursor-pointer"><Upload className="w-4 h-4"/><span>Import CSV</span>
+<input type="file" accept=".csv" className="hidden" onChange={async (e) => {
+  const file = e.target.files?.[0]; if (!file) return; e.target.value = '';
+  const text = await file.text();
+  const lines = text.split('\n').map(l => l.split(',').map(c => c.trim().replace(/^"|"$/g, '')));
+  const headers = lines[0].map(h => h.toLowerCase());
+  const licIdx = headers.findIndex(h => h.includes('licence') || h.includes('license') || h.includes('service'));
+  if (licIdx === -1) { alert('CSV must have a licence/service column'); return; }
+  const vendIdx = headers.findIndex(h => h.includes('vendor'));
+  const typeIdx = headers.findIndex(h => h.includes('type'));
+  const eurIdx = headers.findIndex(h => h.includes('eur') && h.includes('annual'));
+  const curIdx = headers.findIndex(h => h.includes('currency'));
+  const regIdx = headers.findIndex(h => h.includes('region'));
+  const ccIdx = headers.findIndex(h => h.includes('cost') && h.includes('centre'));
+  const cvIdx = headers.findIndex(h => h.includes('contract') && h.includes('value'));
+  const cedIdx = headers.findIndex(h => h.includes('contract') && h.includes('end'));
+  const buIdx = headers.findIndex(h => h.includes('business') && h.includes('unit'));
+  const scIdx = headers.findIndex(h => h.includes('service') && h.includes('category'));
+  const monthNames = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const monthIdxs = monthNames.map(m => headers.findIndex(h => h.trim().toLowerCase() === m || h.trim().toLowerCase().startsWith(m) && h.trim().length <= 4));
+  const hasMonthCols = monthIdxs.some(i => i >= 0);
+  const items = [];
+  for (let i = 1; i < lines.length; i++) {
+    const r = lines[i]; if (!r[licIdx]) continue;
+    let mb = {};
+    if (hasMonthCols) {
+      monthIdxs.forEach((idx, mi) => { if (idx >= 0) mb[monthLabels[mi]] = parseFloat(r[idx]) || 0; else mb[monthLabels[mi]] = 0; });
+    } else {
+      const eurVal = eurIdx >= 0 ? parseFloat(r[eurIdx]) || 0 : 0;
+      const monthly = eurVal / 12;
+      monthLabels.forEach(m => { mb[m] = monthly; });
+    }
+    const eurVal = eurIdx >= 0 ? parseFloat(r[eurIdx]) || 0 : monthLabels.reduce((s, m) => s + (mb[m]||0), 0);
+    items.push({
+      licence: r[licIdx],
+      vendor: vendIdx >= 0 ? r[vendIdx] : '',
+      type: typeIdx >= 0 ? r[typeIdx] : 'BAU',
+      eurAnnual: eurVal || null,
+      currency: curIdx >= 0 ? r[curIdx] : 'EUR',
+      region: regIdx >= 0 ? r[regIdx] : '',
+      costCentre: ccIdx >= 0 ? r[ccIdx] : '',
+      contractValue: cvIdx >= 0 ? parseFloat(r[cvIdx]) || null : null,
+      contractEndDate: cedIdx >= 0 ? r[cedIdx] : '',
+      businessUnit: buIdx >= 0 ? r[buIdx] : '',
+      serviceCategory: scIdx >= 0 ? r[scIdx] : '',
+      monthlyBudget: mb,
+    });
+  }
+  if (items.length === 0) { alert('No valid rows found in CSV'); return; }
+  const count = await addBulkBudgetLines(sb.id, items);
+  if (count > 0) alert(`${count} line item(s) imported successfully`);
+}}/></label>
+<label className="flex items-center space-x-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-semibold cursor-pointer"><Sparkles className="w-4 h-4"/><span>AI Import</span>
+<input type="file" accept=".xlsx,.xls" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; if (!file) return; e.target.value = ''; handleAiImport(file); }}/></label>
+</div>)}
+</div>
+{/* Line Items Table */}
+{(() => { const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const fmtM = v => typeof v === 'number' ? v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : '0.00';
+const monthTotals = {}; MONTHS.forEach(m => { monthTotals[m] = (sb.lineItems||[]).reduce((sum, li) => sum + (parseFloat(li.monthlyBudget?.[m]) || 0), 0); });
+const _ic = "w-full text-sm px-1.5 py-1 border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-teal-500 focus:border-teal-500 bg-white";
+const updateLineField = async (li, field, val) => {
+  try {
+    const patch = { [field]: val };
+    // If updating monthly, recalc annual
+    if (field === 'monthlyBudget') {
+      patch.eurAnnual = MONTHS.reduce((s, m) => s + (parseFloat(val[m]) || 0), 0);
+    }
+    await api.patch(`/api/budgets/${sb.id}/line-items/${li.id}`, patch);
+    setSelectedBudget(prev => ({ ...prev, lineItems: prev.lineItems.map(l => l.id === li.id ? { ...l, ...patch } : l) }));
+    if (field === 'monthlyBudget' || field === 'eurAnnual' || field === 'spendApprovalId') refreshBudgetReport();
+  } catch (err) { alert('Failed to update: ' + err.message); }
+};
+const budgetCommentModal = commentModal && (
+<div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={() => setCommentModal(null)}>
+<div className="bg-white rounded-lg shadow-2xl max-w-md w-full p-6" onClick={e => e.stopPropagation()}>
+<h3 className="text-lg font-bold text-gray-900 mb-3">{commentModal.comments ? 'Edit' : 'Add'} Comment</h3>
+<textarea value={commentText} onChange={e => setCommentText(e.target.value)} rows={4} className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 resize-none" placeholder="Enter comment..." autoFocus/>
+<div className="flex space-x-3 mt-4">
+<button onClick={() => setCommentModal(null)} className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Cancel</button>
+<button onClick={() => { updateLineField(commentModal, 'comments', commentText.trim() || null); setCommentModal(null); }} className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium">Save</button>
+</div></div></div>);
+const updateLineMonth = (li, month, val) => {
+  const mb = { ...(li.monthlyBudget || {}), [month]: parseFloat(val) || 0 };
+  updateLineField(li, 'monthlyBudget', mb);
+};
+const blurText = (li, field, e) => { const v = e.target.value.trim(); if (v !== (li[field]||'')) updateLineField(li, field, v || null); };
+const blurNum = (li, field, e) => { const v = e.target.value; const n = parseFloat(v) || null; if (n !== (parseFloat(li[field])||null)) updateLineField(li, field, n); };
+// Detect spread: all months equal means spread is active
+const isSpreadLine = (li) => {
+  const mb = li.monthlyBudget || {};
+  const vals = MONTHS.map(m => parseFloat(mb[m]) || 0);
+  return vals[0] > 0 && vals.every(v => v === vals[0]);
+};
+// Initialize spread state from data on first render of this budget
+if (sb.lineItems && Object.keys(spreadLines).length === 0) {
+  const initial = {};
+  sb.lineItems.forEach(li => { if (isSpreadLine(li)) initial[li.id] = true; });
+  if (Object.keys(initial).length > 0) { setTimeout(() => setSpreadLines(initial), 0); }
+}
+const doSpread = async (liOrId, cv, cur) => {
+  const lid = typeof liOrId === 'object' ? liOrId.id : liOrId;
+  const val = parseFloat(cv) || 0;
+  if (val === 0) return;
+  const rate = eurRates[cur] || 1;
+  const eurTotal = val * rate;
+  const monthly = Math.round((eurTotal / 12) * 100) / 100;
+  const mb = {}; MONTHS.forEach(m => { mb[m] = monthly; });
+  const eurAnnual = monthly * 12;
+  try {
+    await api.patch(`/api/budgets/${sb.id}/line-items/${lid}`, { monthlyBudget: mb, eurAnnual });
+    setSelectedBudget(prev => ({ ...prev, lineItems: prev.lineItems.map(l => l.id === lid ? { ...l, monthlyBudget: mb, eurAnnual } : l) }));
+    refreshBudgetReport();
+  } catch (err) { alert('Failed to spread: ' + err.message); }
+};
+const toggleSpread = (li) => {
+  const isOn = !spreadLines[li.id];
+  setSpreadLines(prev => ({ ...prev, [li.id]: isOn }));
+  if (isOn) doSpread(li, li.contractValue, li.currency);
+};
+const handleContractValueBlur = (li, e) => {
+  const v = e.target.value; const n = parseFloat(v) || null;
+  if (n === (parseFloat(li.contractValue)||null)) return;
+  // Update contractValue in state first, then spread if needed
+  const updatedLi = { ...li, contractValue: n };
+  updateLineField(li, 'contractValue', n);
+  if (spreadLines[li.id] && n) doSpread(updatedLi, n, li.currency);
+};
+const handleCurrencyChange = (li, newCur) => {
+  updateLineField(li, 'currency', newCur);
+  if (spreadLines[li.id]) doSpread(li, li.contractValue, newCur);
+};
+const colCount = 9 + 12 + 3 + (isDraft ? 2 : 0);
+// --- Search, filter, group ---
+const allItems = sb.lineItems || [];
+const searchLower = bliSearch.toLowerCase();
+const filtered = allItems.filter(li => {
+  if (searchLower && ![li.licence, li.vendor, li.businessUnit, li.serviceCategory, li.comments, li.region, li.costCentre].some(v => v && v.toLowerCase().includes(searchLower))) return false;
+  if (bliFilters.type && li.type !== bliFilters.type) return false;
+  if (bliFilters.businessUnit && (li.businessUnit || '') !== bliFilters.businessUnit) return false;
+  if (bliFilters.region && (li.region || '') !== bliFilters.region) return false;
+  if (bliFilters.currency && (li.currency || '') !== bliFilters.currency) return false;
+  if (bliFilters.vendor && (li.vendor || '') !== bliFilters.vendor) return false;
+  return true;
+});
+const uniqueVals = (field) => [...new Set(allItems.map(li => li[field] || '').filter(Boolean))].sort();
+const grouped = bliGroupBy ? filtered.reduce((acc, li) => { const key = li[bliGroupBy] || 'Unassigned'; (acc[key] = acc[key] || []).push(li); return acc; }, {}) : { '': filtered };
+const groupKeys = Object.keys(grouped).sort((a, b) => a === 'Unassigned' ? 1 : b === 'Unassigned' ? -1 : a.localeCompare(b));
+const filteredMonthTotals = {}; MONTHS.forEach(m => { filteredMonthTotals[m] = filtered.reduce((sum, li) => sum + (parseFloat(li.monthlyBudget?.[m]) || 0), 0); });
+const filteredTotalEur = filtered.reduce((sum, li) => sum + (parseFloat(li.eurAnnual) || 0), 0);
+const hasActiveFilters = bliSearch || bliFilters.type || bliFilters.businessUnit || bliFilters.region || bliFilters.currency || bliFilters.vendor || bliGroupBy;
+return (<div className="bg-white rounded-xl shadow-lg overflow-hidden" style={{maxWidth:'calc(100vw - 2rem)'}}>
+{/* Search / Filter / Group toolbar */}
+<div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
+<div className="flex flex-wrap items-center gap-2">
+<div className="relative flex-1 min-w-[200px] max-w-[320px]"><Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"/><input type="text" value={bliSearch} onChange={e => setBliSearch(e.target.value)} placeholder="Search line items..." className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 bg-white"/></div>
+<select value={bliFilters.type} onChange={e => setBliFilters(p => ({...p, type: e.target.value}))} className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:ring-2 focus:ring-teal-500"><option value="">All Types</option><option value="BAU">BAU</option><option value="New">New</option><option value="XDT">XDT</option></select>
+{uniqueVals('businessUnit').length > 1 && <select value={bliFilters.businessUnit} onChange={e => setBliFilters(p => ({...p, businessUnit: e.target.value}))} className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:ring-2 focus:ring-teal-500"><option value="">All Business Units</option>{uniqueVals('businessUnit').map(v => <option key={v} value={v}>{v}</option>)}</select>}
+{uniqueVals('region').length > 1 && <select value={bliFilters.region} onChange={e => setBliFilters(p => ({...p, region: e.target.value}))} className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:ring-2 focus:ring-teal-500"><option value="">All Regions</option>{uniqueVals('region').map(v => <option key={v} value={v}>{v}</option>)}</select>}
+{uniqueVals('currency').length > 1 && <select value={bliFilters.currency} onChange={e => setBliFilters(p => ({...p, currency: e.target.value}))} className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:ring-2 focus:ring-teal-500"><option value="">All Currencies</option>{uniqueVals('currency').map(v => <option key={v} value={v}>{v}</option>)}</select>}
+{uniqueVals('vendor').length > 1 && <select value={bliFilters.vendor} onChange={e => setBliFilters(p => ({...p, vendor: e.target.value}))} className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:ring-2 focus:ring-teal-500 max-w-[180px]"><option value="">All Vendors</option>{uniqueVals('vendor').map(v => <option key={v} value={v}>{v.length > 30 ? v.substring(0,30)+'...' : v}</option>)}</select>}
+<div className="flex items-center gap-1 ml-auto"><span className="text-xs text-gray-500">Group:</span><select value={bliGroupBy} onChange={e => setBliGroupBy(e.target.value)} className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:ring-2 focus:ring-teal-500"><option value="">None</option><option value="type">Type</option><option value="businessUnit">Business Unit</option><option value="serviceCategory">Service Category</option><option value="region">Region</option><option value="currency">Currency</option><option value="vendor">Vendor</option></select></div>
+{hasActiveFilters && <button onClick={() => { setBliSearch(''); setBliFilters({ type: '', businessUnit: '', region: '', currency: '', vendor: '' }); setBliGroupBy(''); }} className="text-xs text-red-600 hover:text-red-800 font-medium px-2 py-1.5 border border-red-200 rounded-lg hover:bg-red-50">Clear All</button>}
+</div>
+{hasActiveFilters && <p className="text-xs text-gray-500 mt-1.5">Showing {filtered.length} of {allItems.length} line items{bliGroupBy ? ` · Grouped by ${bliGroupBy === 'businessUnit' ? 'Business Unit' : bliGroupBy === 'serviceCategory' ? 'Service Category' : bliGroupBy.charAt(0).toUpperCase() + bliGroupBy.slice(1)}` : ''}</p>}
+</div>
+<div className="overflow-x-auto overflow-y-auto max-h-[70vh]"><table className="w-full text-left text-sm">
+<thead className="sticky top-0 z-10"><tr className="border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase bg-gray-50">
+<th className="px-2 py-3 min-w-[80px]">Type</th><th className="px-2 py-3 min-w-[140px]">Business Unit</th><th className="px-2 py-3 min-w-[200px]">Service Category</th><th className="px-2 py-3 min-w-[140px]">Vendor</th><th className="px-2 py-3 min-w-[80px]">Region</th><th className="px-2 py-3 min-w-[100px]">Cost Centre</th><th className="px-2 py-3 min-w-[80px]">Currency</th>
+<th className="px-2 py-3 text-right min-w-[110px]">Contract Value</th>{isDraft && <th className="px-1 py-3 text-center min-w-[55px]">Spread</th>}<th className="px-2 py-3 min-w-[100px]">Contract End</th>
+{MONTHS.map(m => <th key={m} className="px-1 py-3 text-right min-w-[85px]">{m}</th>)}
+<th className="px-2 py-3 text-right font-bold min-w-[110px]">EUR Annual</th><th className="px-1 py-3 text-center min-w-[36px]" title="Comments"><MessageSquare className="w-3.5 h-3.5 inline text-gray-400"/></th><th className="px-2 py-3 min-w-[100px]">Linked SA</th>{isDraft && <th className="px-2 py-3 text-center min-w-[60px]"></th>}
+</tr></thead><tbody>
+{groupKeys.map(gk => { const groupItems = grouped[gk]; const groupEur = groupItems.reduce((s, li) => s + (parseFloat(li.eurAnnual)||0), 0); return (<React.Fragment key={gk}>
+{bliGroupBy && <tr className="bg-indigo-50 border-b border-indigo-100"><td colSpan={colCount} className="px-3 py-2"><span className="text-xs font-bold text-indigo-800 uppercase">{gk}</span><span className="text-xs text-indigo-600 ml-2">({groupItems.length} items · €{groupEur.toLocaleString(undefined,{minimumFractionDigits:2})})</span></td></tr>}
+{groupItems.map(li => {
+  const mb = li.monthlyBudget || {};
+  const eurA = parseFloat(li.eurAnnual) || 0;
+  return (<tr key={li.id} className="border-b border-gray-100 hover:bg-gray-50 align-top">
+  <td className="px-1 py-1">{isDraft ? <select defaultValue={li.type} onChange={e => updateLineField(li, 'type', e.target.value)} className={_ic}><option value="BAU">BAU</option><option value="New">New</option><option value="XDT">XDT</option></select> : <span className={`px-2 py-0.5 rounded text-xs font-semibold ${li.type === 'BAU' ? 'bg-blue-100 text-blue-700' : li.type === 'New' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>{li.type}</span>}</td>
+  <td className="px-1 py-1">{isDraft ? <select defaultValue={li.businessUnit||''} onChange={e => updateLineField(li, 'businessUnit', e.target.value || null)} className={_ic}><option value="">Select...</option>{businessUnits.filter(bu=>bu.active).map(bu=>(<option key={bu.id} value={bu.name}>{bu.name}</option>))}{li.businessUnit && !businessUnits.find(bu=>bu.name===li.businessUnit) && <option value={li.businessUnit}>{li.businessUnit}</option>}</select> : <span className="text-gray-600">{li.businessUnit || '—'}</span>}</td>
+  <td className="px-1 py-1">{isDraft ? <select defaultValue={li.licence} onChange={e => updateLineField(li, 'licence', e.target.value)} className={`${_ic} font-medium`}><option value="">Select...</option>{categories.filter(c=>c.active).map(c=>(<option key={c.id} value={c.name}>{c.name}</option>))}{li.licence && !categories.find(c=>c.name===li.licence) && <option value={li.licence}>{li.licence}</option>}</select> : <span className="font-medium text-gray-800">{li.licence}</span>}</td>
+  <td className="px-1 py-1">{isDraft ? <input type="text" defaultValue={li.vendor||''} onBlur={e => blurText(li, 'vendor', e)} className={_ic} placeholder="Vendor"/> : <span className="text-gray-600">{li.vendor || '—'}</span>}</td>
+  <td className="px-1 py-1">{isDraft ? <select defaultValue={li.region||''} onChange={e => updateLineField(li, 'region', e.target.value || null)} className={_ic}><option value="">Select...</option>{regions.filter(r=>r.active).map(r=>(<option key={r.id} value={r.code}>{r.code}</option>))}{li.region && !regions.find(r=>r.code===li.region) && <option value={li.region}>{li.region}</option>}</select> : <span className="text-gray-600">{li.region || '—'}</span>}</td>
+  <td className="px-1 py-1">{isDraft ? <select defaultValue={li.costCentre||''} onChange={e => updateLineField(li, 'costCentre', e.target.value || null)} className={_ic}><option value="">Select...</option>{costCentres.filter(c=>c.active).map(c=>(<option key={c.id} value={c.code}>{c.code}</option>))}{li.costCentre && !costCentres.find(c=>c.code===li.costCentre) && <option value={li.costCentre}>{li.costCentre}</option>}</select> : <span className="text-gray-600">{li.costCentre || '—'}</span>}</td>
+  <td className="px-1 py-1">{isDraft ? <select defaultValue={li.currency||'EUR'} onChange={e => handleCurrencyChange(li, e.target.value)} className={_ic}><option value="EUR">EUR</option><option value="GBP">GBP</option><option value="USD">USD</option></select> : <span className="text-gray-600">{li.currency || '—'}</span>}</td>
+  <td className="px-1 py-1">{isDraft ? <input key={`cv-${li.id}-${li.contractValue}`} type="number" step="0.01" defaultValue={li.contractValue||''} onBlur={e => handleContractValueBlur(li, e)} className={`${_ic} text-right`} placeholder="0.00"/> : <span className="text-right block">{li.contractValue ? `${parseFloat(li.contractValue).toLocaleString(undefined,{minimumFractionDigits:2})}` : '—'}</span>}</td>
+  {isDraft && <td className="px-1 py-1 text-center"><input type="checkbox" checked={!!spreadLines[li.id]} onChange={() => toggleSpread(li)} className="w-4 h-4 text-teal-600 rounded border-gray-300 focus:ring-teal-500 cursor-pointer" title="Spread contract value evenly across months (converted to EUR)"/></td>}
+  <td className="px-1 py-1">{isDraft ? <input type="text" defaultValue={li.contractEndDate||''} onBlur={e => blurText(li, 'contractEndDate', e)} className={_ic} placeholder="dd/mm/yyyy"/> : <span className="text-gray-600">{li.contractEndDate || '—'}</span>}</td>
+  {MONTHS.map(m => (<td key={m} className="px-1 py-1 text-right">
+    {isDraft ? <input key={`${li.id}-${m}-${mb[m]}`} type="number" step="0.01" defaultValue={parseFloat(mb[m]) || ''} onBlur={e => { const v = e.target.value; if (v !== '' && parseFloat(v) !== (parseFloat(mb[m])||0)) updateLineMonth(li, m, v); }} className={`${_ic} text-right`} placeholder="0.00"/>
+    : <span className="text-sm text-gray-700">{fmtM(parseFloat(mb[m])||0)}</span>}
+  </td>))}
+  <td className="px-2 py-2 text-right font-bold text-teal-700">€{eurA.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+  <td className="px-1 py-2 text-center relative group">{isDraft ? <button onClick={() => { setCommentText(li.comments || ''); setCommentModal(li); }} className={`${li.comments ? 'text-indigo-600' : 'text-gray-300 hover:text-gray-500'}`} title={li.comments || 'Add comment'}><MessageSquare className="w-4 h-4"/></button> : li.comments ? <span className="text-indigo-600 cursor-help"><MessageSquare className="w-4 h-4 inline"/></span> : <span className="text-gray-300"><MessageSquare className="w-4 h-4 inline"/></span>}{li.comments && <div className="hidden group-hover:block absolute z-20 bottom-full left-1/2 -translate-x-1/2 mb-1 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg max-w-[250px] whitespace-pre-wrap">{li.comments}<div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div></div>}</td>
+  <td className="px-2 py-2">{li.spendApproval ? <span className="text-xs text-indigo-600 font-semibold">{li.spendApproval.ref}</span> : <span className="text-xs text-gray-400">—</span>}</td>
+  {isDraft && <td className="px-2 py-2 text-center"><button onClick={() => deleteBudgetLineItem(sb.id, li.id)} className="text-red-500 hover:text-red-700"><Trash2 className="w-4 h-4"/></button></td>}
+  </tr>);
+})}
+</React.Fragment>); })}
+{allItems.length === 0 && <tr><td colSpan={colCount} className="px-4 py-8 text-center text-gray-400">No line items yet. {isDraft ? 'Add line items or import from CSV.' : ''}</td></tr>}
+{allItems.length > 0 && filtered.length === 0 && <tr><td colSpan={colCount} className="px-4 py-6 text-center text-gray-400">No line items match your filters.</td></tr>}
+</tbody>
+{filtered.length > 0 && (<tfoot className="sticky bottom-0 z-10"><tr className="border-t-2 border-gray-300 font-bold bg-gray-50">
+<td className="px-2 py-3" colSpan={isDraft ? 10 : 9}>Totals{hasActiveFilters ? ` (${filtered.length} of ${allItems.length})` : ''}</td>
+{MONTHS.map(m => <td key={m} className="px-1 py-3 text-right text-teal-700">€{fmtM(filteredMonthTotals[m])}</td>)}
+<td className="px-2 py-3 text-right text-teal-800">€{filteredTotalEur.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+<td></td><td>{/* linked SA */}</td>{isDraft && <td></td>}</tr></tfoot>)}
+</table></div>{budgetCommentModal}</div>); })()}
+{aiImport.open && (
+<div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={() => !aiImport.loading && setAiImport({ open: false, loading: false, error: null, result: null, fileName: '' })}>
+<div className="bg-white rounded-xl shadow-2xl max-w-5xl w-full max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+<div className="flex items-center justify-between p-5 border-b border-gray-200">
+<div className="flex items-center space-x-3"><Sparkles className="w-6 h-6 text-purple-600"/><div><h3 className="text-lg font-bold text-gray-900">AI Import</h3><p className="text-sm text-gray-500">{aiImport.fileName}</p></div></div>
+{!aiImport.loading && <button onClick={() => setAiImport({ open: false, loading: false, error: null, result: null, fileName: '' })} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5"/></button>}
+</div>
+<div className="flex-1 overflow-y-auto p-5">
+{aiImport.loading && (
+<div className="flex flex-col items-center justify-center py-16">
+<Loader2 className="w-12 h-12 text-purple-600 animate-spin mb-4"/>
+<p className="text-lg font-semibold text-gray-700 mb-1">Analysing spreadsheet with AI...</p>
+<p className="text-sm text-gray-500">Claude is mapping your columns to budget fields</p>
+</div>)}
+{aiImport.error && (
+<div className="bg-red-50 border border-red-200 rounded-lg p-4">
+<p className="text-red-700 font-medium">Import failed</p>
+<p className="text-red-600 text-sm mt-1">{aiImport.error}</p>
+<button onClick={() => setAiImport({ open: false, loading: false, error: null, result: null, fileName: '' })} className="mt-3 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm font-medium">Close</button>
+</div>)}
+{aiImport.result && (() => {
+  const r = aiImport.result;
+  return (<div>
+  <div className="grid grid-cols-3 gap-4 mb-4">
+  <div className="bg-purple-50 rounded-lg p-3 border border-purple-200"><p className="text-xs font-medium text-purple-600 uppercase">Sheet Used</p><p className="text-sm font-bold text-purple-800">{r.sheetUsed}</p></div>
+  <div className="bg-green-50 rounded-lg p-3 border border-green-200"><p className="text-xs font-medium text-green-600 uppercase">Rows Mapped</p><p className="text-sm font-bold text-green-800">{r.totalMapped} of {r.totalInFile}</p></div>
+  <div className="bg-teal-50 rounded-lg p-3 border border-teal-200"><p className="text-xs font-medium text-teal-600 uppercase">Total EUR Annual</p><p className="text-sm font-bold text-teal-800">€{r.rows.reduce((s, row) => s + (row.eurAnnual || 0), 0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</p></div>
+  </div>
+  {r.mappings && Object.keys(r.mappings).length > 0 && (
+  <div className="mb-4 bg-gray-50 rounded-lg p-3 border border-gray-200">
+  <p className="text-xs font-semibold text-gray-600 uppercase mb-2">Field Mappings</p>
+  <div className="flex flex-wrap gap-2">
+  {Object.entries(r.mappings).map(([target, source]) => (
+  <span key={target} className="inline-flex items-center gap-1 text-xs bg-white border border-gray-300 rounded-full px-2.5 py-1"><span className="font-medium text-purple-700">{target}</span><span className="text-gray-400">←</span><span className="text-gray-600">{source}</span></span>
+  ))}
+  </div></div>)}
+  <div className="overflow-x-auto border border-gray-200 rounded-lg">
+  <table className="w-full text-xs text-left">
+  <thead><tr className="bg-gray-50 border-b border-gray-200 text-gray-500 uppercase">
+  <th className="px-2 py-2">#</th><th className="px-2 py-2">Type</th><th className="px-2 py-2">Business Unit</th><th className="px-2 py-2">Service Cat.</th><th className="px-2 py-2">Licence</th><th className="px-2 py-2">Vendor</th><th className="px-2 py-2">Region</th><th className="px-2 py-2">Currency</th><th className="px-2 py-2 text-right">Contract Val.</th><th className="px-2 py-2 text-right">EUR Annual</th><th className="px-2 py-2">Comments</th>
+  </tr></thead>
+  <tbody>{r.rows.slice(0, 100).map((row, i) => (
+  <tr key={i} className="border-b border-gray-100 hover:bg-gray-50">
+  <td className="px-2 py-1.5 text-gray-400">{i+1}</td>
+  <td className="px-2 py-1.5"><span className={`px-1.5 py-0.5 rounded text-xs font-semibold ${row.type === 'BAU' ? 'bg-blue-100 text-blue-700' : row.type === 'New' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>{row.type}</span></td>
+  <td className="px-2 py-1.5">{row.businessUnit || '—'}</td>
+  <td className="px-2 py-1.5">{row.serviceCategory || '—'}</td>
+  <td className="px-2 py-1.5 font-medium max-w-[200px] truncate">{row.licence}</td>
+  <td className="px-2 py-1.5 max-w-[150px] truncate">{row.vendor || '—'}</td>
+  <td className="px-2 py-1.5">{row.region || '—'}</td>
+  <td className="px-2 py-1.5">{row.currency}</td>
+  <td className="px-2 py-1.5 text-right">{row.contractValue ? row.contractValue.toLocaleString(undefined,{minimumFractionDigits:2}) : '—'}</td>
+  <td className="px-2 py-1.5 text-right font-semibold text-teal-700">{row.eurAnnual ? `€${row.eurAnnual.toLocaleString(undefined,{minimumFractionDigits:2})}` : '—'}</td>
+  <td className="px-2 py-1.5 max-w-[120px] truncate text-gray-500">{row.comments || '—'}</td>
+  </tr>))}</tbody>
+  </table>
+  {r.rows.length > 100 && <p className="text-xs text-gray-500 p-2 text-center">Showing first 100 of {r.rows.length} rows</p>}
+  </div></div>);
+})()}
+</div>
+{aiImport.result && (
+<div className="flex items-center justify-between p-5 border-t border-gray-200 bg-gray-50 rounded-b-xl">
+<p className="text-sm text-gray-600">{aiImport.result.totalMapped} line item{aiImport.result.totalMapped !== 1 ? 's' : ''} will be added to this budget</p>
+<div className="flex space-x-3">
+<button onClick={() => setAiImport({ open: false, loading: false, error: null, result: null, fileName: '' })} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Cancel</button>
+<button onClick={() => confirmAiImport(sb.id, aiImport.result.rows)} className="px-5 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm font-semibold flex items-center space-x-2"><CheckCircle className="w-4 h-4"/><span>Import {aiImport.result.totalMapped} Items</span></button>
+</div></div>)}
+</div></div>)}
+</div></div>); }
+
+// Budget list view
+return (<div className={_pg}><div className="w-full">{budgetNavBar}
+<div className={_fj+" mb-6"}>
+<div className="flex items-center space-x-2">
+<span className="text-sm text-gray-500">{budgets.length} budget{budgets.length !== 1 ? 's' : ''}</span>
+</div>
+<button onClick={() => { setBudgetForm({ title: '', year: new Date().getFullYear(), functionId: '' }); setBudgetView('form'); }} className="flex items-center space-x-2 px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 font-semibold"><Plus className="w-4 h-4"/><span>New Budget</span></button>
+</div>
+{budgets.length === 0 ? (<div className="bg-white rounded-xl shadow-lg p-12 text-center"><Wallet className="w-16 h-16 text-gray-300 mx-auto mb-4"/><h3 className="text-lg font-semibold text-gray-600 mb-2">No budgets yet</h3><p className="text-gray-400 mb-6">Create your first budget to start tracking spend against plan.</p><button onClick={() => setBudgetView('form')} className="px-6 py-2.5 bg-teal-600 text-white rounded-lg hover:bg-teal-700 font-semibold">Create Budget</button></div>)
+: (<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+{budgets.map(b => (<div key={b.id} className="bg-white rounded-xl shadow-lg hover:shadow-xl border-2 border-transparent hover:border-teal-300 transition cursor-pointer" onClick={() => openBudgetDetail(b)}>
+<div className="p-6">
+<div className={_fj+" mb-3"}>
+<span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${b.status === 'Draft' ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'}`}>{b.status}</span>
+<span className="text-sm font-medium text-gray-500">{b.year}</span>
+</div>
+<h3 className="text-lg font-bold text-gray-800 mb-1">{b.title}</h3>
+<p className="text-sm text-gray-500 mb-4">{b.function?.name || '—'} — Created by {b.createdBy?.name}</p>
+<div className="grid grid-cols-3 gap-3">
+<div className="bg-gray-50 rounded-lg p-3"><p className="text-xs text-gray-500">Annual EUR</p><p className="text-lg font-bold text-teal-700">€{(b.totalEurAnnual||0).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})}</p></div>
+<div className="bg-gray-50 rounded-lg p-3"><p className="text-xs text-gray-500">Line Items</p><p className="text-lg font-bold text-gray-700">{b.lineItemCount || 0}</p></div>
+{(() => { const pct = b.totalEurAnnual > 0 ? Math.round((b.totalSpent || 0) / b.totalEurAnnual * 100) : 0; const color = pct > 100 ? 'text-red-600' : pct > 80 ? 'text-amber-600' : 'text-teal-600'; return (
+<div className="bg-gray-50 rounded-lg p-3"><p className="text-xs text-gray-500">Budget Spent</p><p className={`text-lg font-bold ${color}`}>{pct}%</p>
+<div className="w-full bg-gray-200 rounded-full h-1.5 mt-1"><div className={`h-1.5 rounded-full ${pct > 100 ? 'bg-red-500' : pct > 80 ? 'bg-amber-500' : 'bg-teal-500'}`} style={{width:`${Math.min(pct,100)}%`}}/></div></div>);})()}
+</div>
+<div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-100">
+<span className="text-xs text-gray-400">{new Date(b.createdAt).toLocaleDateString()}{b.submittedAt ? ` — Submitted ${new Date(b.submittedAt).toLocaleDateString()}` : ''}</span>
+{b.status === 'Draft' && <button onClick={e => { e.stopPropagation(); deleteBudget(b.id); }} className="text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4"/></button>}
+</div></div></div>))}
+</div>)}
+</div></div>); }
+
 if (currentPage === 'reports') { if (!hasPermission('reports.view')) { setCurrentPage('landing'); return null; } const rd = reportData; const fmtK = (v) => v >= 1000 ? `€${(v/1000).toFixed(1)}k` : `€${v.toFixed(0)}`;
 const STATUS_COLORS = { Approved:'#10b981', Pending:'#f59e0b', Rejected:'#ef4444' };
 const InfoTip = ({tip, size='w-4 h-4'}) => <span className="relative group inline-flex"><AlertCircle className={`${size} text-gray-300 cursor-help flex-shrink-0`}/><span className="pointer-events-none invisible group-hover:visible absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 rounded-lg bg-gray-800 text-white text-xs leading-relaxed p-3 shadow-lg z-50 whitespace-normal">{tip}</span></span>;
@@ -849,14 +1445,14 @@ const handleDragStart = (e, id) => { e.dataTransfer.effectAllowed = 'move'; e.da
 const handleDrop = (e, targetId) => { e.preventDefault(); const srcId = e.dataTransfer.getData('text/plain'); if (srcId === targetId) return; const arr = [...orderedCharts]; const si = arr.indexOf(srcId); const ti = arr.indexOf(targetId); arr.splice(si, 1); arr.splice(ti, 0, srcId); setChartOrder(arr); };
 const handleDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; };
 const chartPairs = []; for (let i = 0; i < orderedCharts.length; i += 2) { chartPairs.push(orderedCharts.slice(i, i + 2)); }
-return (<div className={_pg}><div className="max-w-7xl mx-auto">
+return (<div className={_pg}><div className="w-full">
 <div className="bg-white rounded-lg shadow-lg p-6 mb-6"><div className={_fj}><div className="flex items-center space-x-3"><BarChart3 className="w-8 h-8 text-amber-600"/><h1 className="text-3xl font-bold text-gray-800">Reports</h1></div>
 <div className="flex items-center space-x-4"><div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 rounded-lg"><User className="w-5 h-5 text-indigo-600"/><div className="text-sm"><p className="font-semibold text-gray-800">{user.name}</p><p className="text-xs text-gray-600">{user.role}</p></div></div>
 <button onClick={() => setCurrentPage('landing')} className="flex items-center space-x-2 px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200"><Home className="w-4 h-4"/><span>Dashboard</span></button>
 {hasPermission('reports.export') && <button onClick={exportReportCsv} className="flex items-center space-x-2 px-4 py-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200"><Download className="w-4 h-4"/><span>Export CSV</span></button>}
 {JSON.stringify(chartOrder) !== JSON.stringify(DEFAULT_CHART_ORDER) && <button onClick={() => setChartOrder(DEFAULT_CHART_ORDER)} className="flex items-center space-x-2 px-4 py-2 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 text-sm">Reset layout</button>}
 <button onClick={logout} className="flex items-center space-x-2 px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200"><LogOut className="w-4 h-4"/><span>Logout</span></button></div></div>
-<div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-9 gap-3 mt-4">
+<div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-10 gap-3 mt-4">
 <div><label className="block text-xs font-medium text-gray-500 mb-1">From</label><input type="date" value={reportFilters.dateFrom} onChange={e => setReportFilters(p => ({...p, dateFrom: e.target.value}))} className={`w-full ${_i}`}/></div>
 <div><label className="block text-xs font-medium text-gray-500 mb-1">To</label><input type="date" value={reportFilters.dateTo} onChange={e => setReportFilters(p => ({...p, dateTo: e.target.value}))} className={`w-full ${_i}`}/></div>
 <div><label className="block text-xs font-medium text-gray-500 mb-1">Department</label><select value={reportFilters.department} onChange={e => setReportFilters(p => ({...p, department: e.target.value}))} className={`w-full ${_i}`}><option value="all">All</option>{[...new Set(spendApprovals.map(s=>s.department).filter(Boolean))].sort().map(v=><option key={v} value={v}>{v}</option>)}</select></div>
@@ -866,14 +1462,73 @@ return (<div className={_pg}><div className="max-w-7xl mx-auto">
 <div><label className="block text-xs font-medium text-gray-500 mb-1">Cost Centre</label><select value={reportFilters.costCentre} onChange={e => setReportFilters(p => ({...p, costCentre: e.target.value}))} className={`w-full ${_i}`}><option value="all">All</option>{costCentres.filter(c=>c.active).map(c=><option key={c.id} value={c.code}>{c.code} - {c.name}</option>)}</select></div>
 <div><label className="block text-xs font-medium text-gray-500 mb-1">Atom</label><select value={reportFilters.atom} onChange={e => setReportFilters(p => ({...p, atom: e.target.value}))} className={`w-full ${_i}`}><option value="all">All</option>{atoms.filter(a=>a.active).map(a=><option key={a.id} value={a.code}>{a.code} - {a.name}</option>)}</select></div>
 <div><label className="block text-xs font-medium text-gray-500 mb-1">Vendor</label><select value={reportFilters.vendor} onChange={e => setReportFilters(p => ({...p, vendor: e.target.value}))} className={`w-full ${_i}`}><option value="all">All</option>{[...new Set([...spendApprovals.map(s=>s.vendor),...invoices.map(i=>i.vendor)].filter(Boolean))].sort().map(v=><option key={v} value={v}>{v}</option>)}</select></div>
+<div><label className="block text-xs font-medium text-gray-500 mb-1">Budget</label><select value={reportFilters.budget} onChange={e => { setReportFilters(p => ({...p, budget: e.target.value})); const bId = e.target.value !== 'all' ? e.target.value : ''; api.get(`/api/budget-report${bId ? `?budgetId=${bId}` : ''}`).then(d => setBudgetReport(d||[])).catch(() => {}); }} className={`w-full ${_i}`}><option value="all">All Budgets</option>{budgets.map(b=><option key={b.id} value={b.id}>{b.title} ({b.year})</option>)}</select></div>
 </div>
-{Object.values(reportFilters).some(v => v && v !== 'all') && <div className="mt-2 text-right"><button onClick={() => setReportFilters({dateFrom:'',dateTo:'',department:'all',approver:'all',region:'all',project:'all',costCentre:'all',atom:'all',vendor:'all'})} className="text-sm text-indigo-600 hover:underline">Clear all filters</button></div>}
+{Object.values(reportFilters).some(v => v && v !== 'all') && <div className="mt-2 text-right"><button onClick={() => { setReportFilters({dateFrom:'',dateTo:'',department:'all',approver:'all',region:'all',project:'all',costCentre:'all',atom:'all',vendor:'all',budget:'all'}); api.get('/api/budget-report').then(d => setBudgetReport(d||[])).catch(() => {}); }} className="text-sm text-indigo-600 hover:underline">Clear all filters</button></div>}
 </div>
 {/* KPI Cards */}
 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
 {[{label:'Total Invoiced',value:fmtK(rd.totalInvoicedEur),border:'border-indigo-500',tip:'Sum of all invoice totals (subtotal + tax) converted to EUR using current exchange rates. Filtered by date range, vendor, and linked spend approval filters.'},{label:'Approved Spend',value:fmtK(rd.totalApprovedEur),border:'border-green-500',tip:'Sum of all approved spend approval amounts converted to EUR. Only includes spend approvals with status "Approved".'},{label:'Invoices',value:rd.invoiceCount,border:'border-blue-500',tip:'Total number of invoices matching the current filters. When department/region/project filters are active, only invoices linked to matching spend approvals are counted.'},{label:'Approvals',value:rd.approvalCount,border:'border-purple-500',tip:'Total number of spend approvals (all statuses) matching the current filters.'},{label:'Approval Rate',value:`${rd.approvalRate.toFixed(1)}%`,border:'border-amber-500',tip:'Percentage of filtered spend approvals with status "Approved" out of all filtered spend approvals (approved / total × 100).'},{label:'Avg Days',value:rd.avgDays.toFixed(1),border:'border-rose-500',tip:'Average number of days between the spend approval submission date and the linked invoice date, for invoices that are linked to a spend approval.'}].map((kpi,i)=>(
 <div key={i} className={`bg-white rounded-lg shadow p-4 border-t-4 ${kpi.border}`}><div className="flex items-center justify-between"><p className="text-xs font-medium text-gray-500 uppercase">{kpi.label}</p><InfoTip tip={kpi.tip} size="w-3.5 h-3.5"/></div><p className="text-2xl font-bold text-gray-800 mt-1">{kpi.value}</p></div>))}
 </div>
+{/* Budget vs Spend Approval vs Actuals */}
+{budgetReport.length > 0 && (<div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+<div className="flex items-center justify-between mb-4"><h2 className="text-xl font-bold text-gray-800">Budget vs Spend Approvals vs Actuals</h2>
+<div className="flex items-center space-x-2">
+<button onClick={() => setBudgetReportView('table')} className={`px-3 py-1.5 rounded-lg text-sm font-medium ${budgetReportView==='table' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Table</button>
+<button onClick={() => setBudgetReportView('chart')} className={`px-3 py-1.5 rounded-lg text-sm font-medium ${budgetReportView==='chart' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Chart</button>
+</div></div>
+{budgetReportView === 'table' ? (<div className="overflow-x-auto"><table className="w-full text-left text-sm">
+<thead><tr className="border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase">
+<th className="px-4 py-3">Reference</th><th className="px-4 py-3">Title</th><th className="px-4 py-3">Vendor</th><th className="px-4 py-3">Department</th>
+<th className="px-4 py-3 text-right">Budget (EUR)</th><th className="px-4 py-3 text-right">Approved (EUR)</th><th className="px-4 py-3 text-right">Invoiced (EUR)</th><th className="px-4 py-3 text-right">Variance</th><th className="px-4 py-3 text-center">Status</th>
+</tr></thead><tbody>
+{budgetReport.filter(r => r.budgetLineCount > 0 || r.invoiceCount > 0).map(r => {
+const varClass = r.variance < 0 ? 'text-red-600' : r.variance > 0 ? 'text-green-600' : 'text-gray-600';
+const sBadgeR = (status) => { const c = {Pending:'bg-yellow-100 text-yellow-800',Approved:'bg-green-100 text-green-800',Rejected:'bg-red-100 text-red-800',Escalated:'bg-orange-100 text-orange-800'}; return <span className={`px-2 py-1 rounded-full text-xs font-semibold ${c[status]||'bg-gray-100 text-gray-800'}`}>{status}</span>; };
+return (<tr key={r.spendId} className="border-b border-gray-100 hover:bg-gray-50">
+<td className="px-4 py-3 font-mono text-indigo-600 font-semibold">{r.ref}</td>
+<td className="px-4 py-3 font-medium text-gray-800">{r.title}</td>
+<td className="px-4 py-3 text-gray-600">{r.vendor}</td>
+<td className="px-4 py-3 text-gray-600">{r.department}</td>
+<td className="px-4 py-3 text-right font-semibold">{r.budgetEur > 0 ? `€${r.budgetEur.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}</td>
+<td className="px-4 py-3 text-right font-semibold">{`€${r.approvedEur.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`}</td>
+<td className="px-4 py-3 text-right font-semibold">{r.invoicedEur > 0 ? `€${r.invoicedEur.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}</td>
+<td className={`px-4 py-3 text-right font-semibold ${varClass}`}>{r.budgetEur > 0 ? `€${r.variance.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}</td>
+<td className="px-4 py-3 text-center">{sBadgeR(r.status)}</td>
+</tr>);})}
+{(() => { const totals = budgetReport.reduce((acc,r) => ({ budget: acc.budget+r.budgetEur, approved: acc.approved+r.approvedEur, invoiced: acc.invoiced+r.invoicedEur }), {budget:0,approved:0,invoiced:0}); return (<tr className="border-t-2 border-gray-300 font-bold">
+<td className="px-4 py-3" colSpan={4}>Totals</td>
+<td className="px-4 py-3 text-right">€{totals.budget.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+<td className="px-4 py-3 text-right">€{totals.approved.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+<td className="px-4 py-3 text-right">€{totals.invoiced.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+<td className={`px-4 py-3 text-right ${(totals.budget-totals.invoiced)<0?'text-red-600':'text-green-600'}`}>€{(totals.budget-totals.invoiced).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+<td></td></tr>); })()}
+</tbody></table></div>)
+: (<div>
+{(() => {
+const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const monthKeys = months.map((_,i) => `2026-${String(i+1).padStart(2,'0')}`);
+const chartData = monthKeys.map((mk,i) => {
+const budget = budgetReport.reduce((sum,r) => sum + (r.monthlyBudgets?.[months[i]]||r.monthlyBudgets?.[mk]||0), 0);
+const actual = budgetReport.reduce((sum,r) => sum + (r.monthlyActuals?.[mk]||0), 0);
+const approved = budgetReport.reduce((sum,r) => sum + r.approvedEur/12, 0);
+return { month: months[i], budget: Math.round(budget*100)/100, approved: Math.round(approved*100)/100, actuals: Math.round(actual*100)/100 };
+});
+return (<ResponsiveContainer width="100%" height={400}>
+<LineChart data={chartData}>
+<CartesianGrid strokeDasharray="3 3"/>
+<XAxis dataKey="month" tick={{fontSize:12}}/>
+<YAxis tick={{fontSize:12}} tickFormatter={v => v >= 1000 ? `€${(v/1000).toFixed(0)}k` : `€${v}`}/>
+<Tooltip formatter={(v,name) => [`€${Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`, name]}/>
+<Legend/>
+<Line type="monotone" dataKey="budget" stroke="#6366f1" strokeWidth={2} dot={{r:4}} name="Budget"/>
+<Line type="monotone" dataKey="approved" stroke="#10b981" strokeWidth={2} dot={{r:4}} name="Approved"/>
+<Line type="monotone" dataKey="actuals" stroke="#f59e0b" strokeWidth={2} dot={{r:4}} name="Actuals (Invoiced)"/>
+</LineChart></ResponsiveContainer>);
+})()}
+</div>)}
+</div>)}
 {/* Draggable Charts */}
 {chartPairs.map((pair, ri) => (
 <div key={ri} className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
@@ -979,13 +1634,13 @@ const escalationModal = showEscalationModal && (() => { const esc = showEscalati
 const bulkUpdateSpend = (status) => { const items = spendApprovals.filter(s => selectedSpendIds.includes(s.id) && (s.status==='Pending'||s.status==='Escalated'));
 items.forEach(item => { updateSpendStatus(item.id, status); });
 setSelectedSpendIds([]);};
-if (spendSubmitted) { return (<div className={_pg}><div className="max-w-3xl mx-auto">{navBar}
+if (spendSubmitted) { return (<div className={_pg}><div className="w-full max-w-4xl mx-auto">{navBar}
 <div className="bg-white rounded-xl shadow-lg p-12 text-center"> <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4"/> <h2 className="text-2xl font-bold text-gray-800 mb-3">Request Submitted</h2> <p className="text-gray-500 mb-2">Your spend approval for <strong>{sf.title}</strong> has been submitted.</p> <p className="text-gray-500 mb-2">{fmtEur(sf.amount, sf.currency)} • Approver: {sf.approver}</p>{sf.currency !== 'EUR' && <p className="text-xs text-gray-400 mb-8">Original: {sf.currency} {Number(sf.amount).toLocaleString()}</p>} <div className="flex justify-center space-x-4">
 <button onClick={() => { setSpendForm({ cc:'', title:'', currency:'', approver:'', approverId:null, amount:'', category:'', atom:'', vendor:'', costCentre:'', region:'', project:'', timeSensitive:false, exceptional:'', justification:'', department:'', originInvoiceId: null }); setSpendSubmitted(false); }} className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold">Create Another</button> <button onClick={() => { setSpendSubmitted(false); setSpendView('list'); }} className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition font-semibold">Back to Spend Approvals</button></div></div> </div></div>);}
 if (selectedSpend) { const s = selectedSpend;
 const sBadge2 = (status) => { const c = {Pending:'bg-yellow-100 text-yellow-800',Approved:'bg-green-100 text-green-800',Rejected:'bg-red-100 text-red-800',Escalated:'bg-orange-100 text-orange-800'}; return <span className={`px-3 py-1 rounded-full text-sm font-semibold ${c[status]||'bg-gray-100 text-gray-800'}`}>{status}</span>; };
 const dRow = (label, val) => (<div className="py-3 border-b border-gray-100 grid grid-cols-3"><span className="text-sm font-medium text-gray-500">{label}</span><span className="text-sm text-gray-900 col-span-2">{val}</span></div>);
-return (<div className={_pg}><div className="max-w-3xl mx-auto">{navBar}
+return (<div className={_pg}><div className="w-full max-w-4xl mx-auto">{navBar}
 <div className="bg-white rounded-xl shadow-lg p-8"> <div className={_fj+" mb-6"}> <button onClick={() => setSelectedSpend(null)} className="text-sm text-indigo-600 hover:text-indigo-800 font-semibold">← Back to Spend Approvals</button> {sBadge2(s.status)}</div> <h2 className="text-2xl font-bold text-gray-800 mb-1">{s.title}</h2> <p className="font-mono text-sm text-indigo-600 font-semibold mb-1">{s.ref}</p> <p className="text-sm text-gray-500 mb-6">Submitted by {s.submittedBy} on {new Date(s.submittedAt).toLocaleDateString('en-GB', {day:'numeric',month:'long',year:'numeric'})}</p> <div className="mb-6">
 {dRow('Requested Amount', <span className="font-semibold">{fmtEur(s.amount, s.currency)}{s.currency !== 'EUR' && <span className="text-xs text-gray-400 ml-2">({s.currency} {Number(s.amount).toLocaleString()})</span>}</span>)}
 {dRow('Function / Department', s.department || '—')}
@@ -1012,9 +1667,21 @@ return (<div className={_pg}><div className="max-w-3xl mx-auto">{navBar}
 <Upload className="w-4 h-4"/><span>{isProcessing ? `Processing ${processingProgress.current} of ${processingProgress.total}...` : 'Upload Invoice'}</span>
 {isProcessing && <svg className="animate-spin w-4 h-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>}
 </button></div>)}
-</div> {(s.status === 'Pending' || s.status === 'Escalated') && canApproveSpend() && (s.status !== 'Escalated' || user.isCeo || hasPermission('settings.manage_users')) && (<div className="flex space-x-3 pt-4 border-t border-gray-200"> <button onClick={() => { if (updateSpendStatus(s.id,'Approved') !== false) setSelectedSpend({...s,status:'Approved'}); }} className="px-5 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold">{s.status === 'Escalated' ? 'Final Approve' : 'Approve'}</button>
+</div>
+<div className="mb-6"><h3 className="text-sm font-medium text-gray-500 mb-2">Linked Budget Lines</h3>
+{(() => { const linkedBl = budgetLines.filter(bl => bl.spendApprovalId === s.id); const totalBudgetEur = linkedBl.reduce((sum,bl) => sum + (parseFloat(bl.eurAnnual)||0), 0); return (<>
+{linkedBl.length > 0 ? (<>
+<div className="mb-3 text-sm text-gray-600">Total Budget: <strong>€{totalBudgetEur.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</strong> across {linkedBl.length} line{linkedBl.length>1?'s':''}</div>
+<div className="space-y-2">{linkedBl.map(bl => (<div key={bl.id} className="flex items-center justify-between p-3 bg-blue-50 rounded-lg border border-blue-200"><div><span className="font-medium text-gray-800">{bl.licence}</span><span className="text-sm text-gray-500 ml-2">{bl.vendor||'—'} • €{(parseFloat(bl.eurAnnual)||0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}/yr</span></div>
+<button onClick={async () => { try { await api.patch(`/api/budget-lines/${bl.id}/unlink`); setBudgetLines(prev => prev.map(b => b.id===bl.id ? {...b, spendApprovalId:null} : b)); setSelectedSpend({...s}); } catch(err) { alert('Failed to unlink: '+err.message); }}} className="text-xs text-red-500 hover:text-red-700 font-semibold">Unlink</button></div>))}</div>
+</>) : <p className="text-sm text-gray-500">No budget lines linked yet.</p>}
+{(() => { const unlinkedBl = budgetLines.filter(bl => !bl.spendApprovalId); return unlinkedBl.length > 0 ? (<div className="mt-3 pt-3 border-t border-gray-200"><label className="text-xs font-semibold text-gray-500 uppercase mb-1 block">Link Budget Line</label>
+<select defaultValue="" onChange={async e => { if (e.target.value) { const blId = Number(e.target.value); try { await api.patch(`/api/budget-lines/${blId}/link`, { spendApprovalId: s.id }); setBudgetLines(prev => prev.map(b => b.id===blId ? {...b, spendApprovalId: s.id} : b)); setSelectedSpend({...s}); } catch(err) { alert('Failed to link: '+err.message); } e.target.value=''; }}} className={`w-full ${_g}`}><option value="" disabled>Select a budget line...</option>{unlinkedBl.map(bl => (<option key={bl.id} value={bl.id}>{bl.licence} — {bl.vendor||'N/A'} (€{(parseFloat(bl.eurAnnual)||0).toLocaleString()})</option>))}</select></div>) : null; })()}
+</>); })()}
+</div>
+{(s.status === 'Pending' || s.status === 'Escalated') && canApproveSpend() && (s.status !== 'Escalated' || user.isCeo || hasPermission('settings.manage_users')) && (<div className="flex space-x-3 pt-4 border-t border-gray-200"> <button onClick={() => { if (updateSpendStatus(s.id,'Approved') !== false) setSelectedSpend({...s,status:'Approved'}); }} className="px-5 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold">{s.status === 'Escalated' ? 'Final Approve' : 'Approve'}</button>
 <button onClick={() => { if (updateSpendStatus(s.id,'Rejected') !== false) setSelectedSpend({...s,status:'Rejected'}); }} className="px-5 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-semibold">Reject</button></div>)}</div> </div>{escalationModal}</div>);}
-if (spendView === 'form') { return (<div className={_pg}><div className="max-w-3xl mx-auto">{navBar}
+if (spendView === 'form') { return (<div className={_pg}><div className="w-full max-w-4xl mx-auto">{navBar}
 <div className="bg-white rounded-xl shadow-lg p-8"> <div className={_fj+" mb-6"}><p className="text-sm text-gray-500">Required fields are marked with an asterisk <span className="text-red-500">*</span></p><button onClick={() => setSpendView('list')} className="text-sm text-indigo-600 hover:text-indigo-800 font-semibold">← Back to Spend Approvals</button></div>
 {sf.originInvoiceId && (() => { const originInv = invoices.find(i => i.id === sf.originInvoiceId); return originInv ? (<div className="mb-5 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center space-x-2"><AlertCircle className="w-5 h-5 text-blue-600 flex-shrink-0"/><p className="text-sm text-blue-800">Created from invoice <strong>{originInv.invoiceNumber}</strong> ({originInv.vendor}). This spend approval will auto-link to the invoice upon approval.</p></div>) : null; })()}
 <div className="mb-5"><label className={slc}>Additional people to notify (CC)</label><input value={sf.cc} onChange={e => updateSpend('cc',e.target.value)} placeholder="CC email..." className={sfc}/></div> <div className="grid grid-cols-1 md:grid-cols-2 gap-5"> <div><label className={slc}>Function / Department {req}</label><select value={sf.department} onChange={e => { const fn = functions.find(f=>f.name===e.target.value); updateSpend('department',e.target.value); if (fn) { updateSpend('approver',fn.approver); updateSpend('approverId',fn.approverId); } }} className={sfc}><option value="">Select...</option>{functions.filter(f=>f.active).map(f=>(<option key={f.id} value={f.name}>{f.name}</option>))}</select></div> <div><label className={slc}>Request Title {req}</label><input value={sf.title} onChange={e => updateSpend('title',e.target.value)} className={sfc}/></div>
@@ -1035,7 +1702,7 @@ const pendingFiltered = filteredSpends.filter(s => s.status === 'Pending');
 const allPendingSelected = pendingFiltered.length > 0 && pendingFiltered.every(s => selectedSpendIds.includes(s.id));
 const toggleSpendSelect = (id) => setSelectedSpendIds(prev => prev.includes(id) ? prev.filter(x=>x!==id) : [...prev,id]);
 const toggleAllSpend = () => { if (allPendingSelected) { setSelectedSpendIds([]); } else { setSelectedSpendIds(pendingFiltered.map(s=>s.id)); } };
-return (<div className={_pg}><div className="max-w-7xl mx-auto">{navBar}
+return (<div className={_pg}><div className="w-full">{navBar}
 {spendAlerts.length > 0 && (<div className="mb-4 space-y-2">{spendAlerts.map(alert => (<div key={alert.id} className={`flex items-start justify-between p-4 rounded-lg border ${alert.threshold === '100%' ? 'bg-red-50 border-red-300' : 'bg-orange-50 border-orange-300'}`}><div className="flex items-start space-x-3"><AlertCircle className={`w-5 h-5 mt-0.5 flex-shrink-0 ${alert.threshold === '100%' ? 'text-red-600' : 'text-orange-600'}`}/><div><p className={`text-sm font-semibold ${alert.threshold === '100%' ? 'text-red-800' : 'text-orange-800'}`}>{alert.threshold} Threshold Reached — {alert.spendRef}</p><p className={`text-sm ${alert.threshold === '100%' ? 'text-red-700' : 'text-orange-700'}`}>{alert.spendTitle} — Invoiced: €{alert.totalInvoiced.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} of €{alert.approvedAmount.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} — Approver: {alert.approver}</p></div></div><button onClick={() => dismissSpendAlert(alert.id)} className={`flex-shrink-0 ${alert.threshold === '100%' ? 'text-red-400 hover:text-red-600' : 'text-orange-400 hover:text-orange-600'}`}><X className="w-4 h-4"/></button></div>))}</div>)}
 <div className="bg-white rounded-xl shadow-lg p-6"> <div className={_fj+" mb-6"}> <h2 className="text-2xl font-bold text-gray-800">Spend Approval List</h2> <div className="flex items-center space-x-3"> {selectedSpendIds.length > 0 && canApproveSpend() && (<> <span className="text-sm text-gray-600">{selectedSpendIds.length} selected</span>
 <button onClick={() => bulkUpdateSpend('Approved')} className="flex items-center space-x-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm font-semibold"><CheckCircle className="w-4 h-4"/><span>Bulk Approve</span></button> <button onClick={() => bulkUpdateSpend('Rejected')} className="flex items-center space-x-1 px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition text-sm font-semibold"><XCircle className="w-4 h-4"/><span>Bulk Reject</span></button> </>)}
@@ -1055,7 +1722,8 @@ return (<div className={_pg}><div className="max-w-7xl mx-auto">{navBar}
 {Object.entries({ref:'Reference',title:'Title',vendor:'Vendor',amount:'Amount',invoiced:'Invoiced',category:'Category',department:'Function',project:'Project',submittedBy:'Submitted By',date:'Date',status:'Status',approver:'Approver',region:'Region',costCentre:'Cost Centre',atom:'Atom'}).map(([k,label])=>(<label key={k} className="flex items-center space-x-2 cursor-pointer"><input type="checkbox" checked={spendVisibleCols[k]} onChange={() => toggleSpendCol(k)} className="w-4 h-4 text-green-600 rounded"/><span className="text-sm text-gray-700">{label}</span></label>))} </div></div>)}</div></div></div>
 <div className={_fj+" mb-4"}> <span className="text-sm text-gray-500">{filteredSpends.length} of {spendApprovals.length} requests</span> <div className="flex items-center space-x-3">
 {canCreateSpend() && <button onClick={() => { setSpendForm({ cc:'', title:'', currency:'', approver:'', approverId:null, amount:'', category:'', atom:'', vendor:'', costCentre:'', region:'', project:'', timeSensitive:false, exceptional:'', justification:'', department:'', originInvoiceId: null }); setSpendView('form'); }} className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold text-sm"><DollarSign className="w-4 h-4"/><span>Create Spend Approval</span></button>}
-{canAssignInvoices() && <button onClick={runAutoMatch} className="flex items-center space-x-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-semibold text-sm"><ExternalLink className="w-4 h-4"/><span>Match Invoices</span></button>}</div></div> <div className="overflow-x-auto"><table className="w-full text-left">
+{canAssignInvoices() && <button onClick={runAutoMatch} className="flex items-center space-x-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-semibold text-sm"><ExternalLink className="w-4 h-4"/><span>Match Invoices</span></button>}
+{canManageBudgets() && <button onClick={runBudgetMatch} className="flex items-center space-x-2 px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition font-semibold text-sm"><Wallet className="w-4 h-4"/><span>Match Budget Items</span></button>}</div></div> <div className="overflow-x-auto"><table className="w-full text-left">
 <thead><tr className="border-b border-gray-200"> {canApproveSpend() && <th className="px-4 py-3 w-10"><input type="checkbox" checked={allPendingSelected} onChange={toggleAllSpend} className="w-4 h-4 text-green-600 rounded"/></th>}
 {spendVisibleCols.ref && <th className={_th}>Reference</th>}
 {spendVisibleCols.title && <th className={_th}>Title</th>}
@@ -1094,11 +1762,40 @@ return (<React.Fragment key={s.id}> {showHeader && <tr className="bg-gray-50"><t
 {spendVisibleCols.atom && <td className={_td}>{(() => { const a = atoms.find(x=>x.code===s.atom); return a ? `${a.code} — ${a.name}` : s.atom; })()}</td>}
 {canApproveSpend() && <td className="px-4 py-3">{(s.status==='Pending' || (s.status==='Escalated' && (user.isCeo || hasPermission('settings.manage_users')))) && <div className="flex space-x-1"><button onClick={() => updateSpendStatus(s.id,'Approved')} className="p-1 text-green-600 hover:bg-green-50 rounded" title="Approve"><CheckCircle className="w-4 h-4"/></button><button onClick={() => updateSpendStatus(s.id,'Rejected')} className="p-1 text-red-600 hover:bg-red-50 rounded" title="Reject"><XCircle className="w-4 h-4"/></button></div>}</td>} </tr></React.Fragment>); }); })()}</tbody> </table></div>
 {filteredSpends.length === 0 && <div className="text-center py-12"><p className="text-gray-500">No results found.</p></div>}</div> </div>{escalationModal}</div>);}
+if (currentPage === 'budget-matching') {
+const unlinkedBl = budgetLines.filter(bl => !bl.spendApprovalId);
+return (<div className={_pg}><div className="w-full"> <div className="bg-white rounded-lg shadow-lg p-6 mb-6"><div className={_fj}> <div className="flex items-center space-x-3"><Wallet className="w-8 h-8 text-teal-600"/><div><h1 className="text-2xl font-bold text-gray-800">Budget Item Matching</h1><p className="text-sm text-gray-500">{pendingBudgetMatches.length} spend approvals with suggested budget items • {unlinkedBl.length} unlinked budget lines</p></div></div>
+<div className="flex items-center space-x-3"><button onClick={() => setCurrentPage('spend-approval')} className="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"><ArrowRight className="w-4 h-4 rotate-180"/><span>Back to Spend Approvals</span></button><button onClick={() => setCurrentPage('landing')} className="flex items-center space-x-2 px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200"><Home className="w-4 h-4"/><span>Dashboard</span></button></div>
+</div></div>
+<details className="bg-white rounded-lg shadow-lg mb-6"><summary className="px-6 py-3 cursor-pointer text-sm font-semibold text-teal-600 hover:text-teal-800">How budget matching scores work</summary><div className="px-6 pb-4"><table className="w-full text-sm text-left border-collapse"><thead><tr className="border-b border-gray-200"><th className="py-2 pr-4 font-semibold text-gray-700">Signal</th><th className="py-2 pr-4 font-semibold text-gray-700 w-16">Score</th><th className="py-2 font-semibold text-gray-700">How it works</th></tr></thead><tbody className="text-gray-600">
+<tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">Vendor match</td><td className="py-2 pr-4 font-bold text-green-600">+35</td><td className="py-2">Budget line vendor contains the spend vendor name or vice versa</td></tr>
+<tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">Title/licence match</td><td className="py-2 pr-4 font-bold text-blue-600">+25</td><td className="py-2">Budget line licence/service name matches the spend approval title</td></tr>
+<tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">Amount match</td><td className="py-2 pr-4 font-bold text-purple-600">+20</td><td className="py-2">Budget EUR annual is within ±15% of the spend approved amount</td></tr>
+<tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">Region match</td><td className="py-2 pr-4 font-bold text-teal-600">+15</td><td className="py-2">Budget line region matches the spend approval region</td></tr>
+<tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">Cost centre match</td><td className="py-2 pr-4 font-bold text-teal-600">+15</td><td className="py-2">Budget line cost centre matches the spend approval cost centre</td></tr>
+<tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">Partial vendor</td><td className="py-2 pr-4 font-bold text-yellow-600">+15</td><td className="py-2">At least one word from the spend vendor appears in the budget vendor</td></tr>
+<tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">Partial title</td><td className="py-2 pr-4 font-bold text-yellow-600">+10</td><td className="py-2">A keyword from the spend title appears in the licence name</td></tr>
+</tbody></table><p className="mt-3 text-xs text-gray-500">Minimum score to suggest: <strong>15</strong>. All amounts compared in EUR using current exchange rates.</p></div></details>
+{pendingBudgetMatches.length > 0 && (<div className="space-y-6 mb-6">{pendingBudgetMatches.map(m => { const spAmt = parseFloat(m.spendAmount)||0; return ( <div key={m.spendId} className="bg-white rounded-lg shadow-lg overflow-hidden">
+<div className="bg-teal-50 px-6 py-4 border-b border-teal-200"><div className={_fj}><div><div className="flex items-center space-x-3 mb-1"><span className="font-mono text-sm font-bold text-teal-600">{m.spendRef}</span><span className="text-lg font-bold text-gray-800">{m.spendTitle}</span></div>
+<div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-gray-500"><span>Vendor: <strong className="text-gray-700">{m.spendVendor}</strong></span><span>Approved: <strong className="text-gray-700">{fmtEur(m.spendAmount, m.spendCurrency)}</strong></span><span>Category: <strong className="text-gray-700">{m.spendCategory}</strong></span><span>Region: <strong className="text-gray-700">{m.spendRegion}</strong></span></div></div>
+<div className="text-right"><div className="text-sm font-semibold text-gray-600">Budget: €{m.totalBudgetEur.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</div>{m.linkedBudgetCount > 0 && <div className="text-xs text-gray-500">{m.linkedBudgetCount} budget line{m.linkedBudgetCount>1?'s':''} already linked</div>}<button onClick={() => dismissBudgetMatch(m.spendId)} className="mt-1 text-xs text-red-500 hover:text-red-700 font-semibold">Dismiss All</button></div></div></div>
+<div className="p-6"><p className="text-xs font-semibold text-gray-500 uppercase mb-3">Suggested Budget Lines ({m.suggestions.length})</p><div className="space-y-3">{m.suggestions.map(sg => ( <div key={sg.budgetLineId} className={`flex items-center justify-between p-4 rounded-lg border ${sg.score>=50?'border-teal-400 bg-teal-50':sg.score>=30?'border-green-300 bg-green-50':'border-gray-200 bg-gray-50'}`}>
+<div className="flex-1"><div className="flex items-center space-x-3 mb-1"><span className="font-semibold text-gray-800">{sg.licence}</span><span className="px-2 py-0.5 bg-white border rounded text-sm text-gray-700">{sg.vendor || '—'}</span><span className="font-bold text-gray-900">€{sg.eurAnnual.toLocaleString(undefined,{minimumFractionDigits:2})}/yr</span><span className={`px-2 py-0.5 rounded text-xs font-semibold ${sg.type === 'BAU' ? 'bg-blue-100 text-blue-700' : sg.type === 'New' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>{sg.type}</span></div>
+<div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">{sg.businessUnit && <span>BU: <strong className="text-gray-700">{sg.businessUnit}</strong></span>}{sg.region && <span>Region: <strong className="text-gray-700">{sg.region}</strong></span>}{sg.costCentre && <span>CC: <strong className="text-gray-700">{sg.costCentre}</strong></span>}{sg.currency && sg.currency !== 'EUR' && <span>Currency: <strong className="text-gray-700">{sg.currency}</strong></span>}</div>
+<div className="flex flex-wrap gap-1 mt-2">{sg.reasons.map((r,i) => <span key={i} className={`px-2 py-0.5 rounded-full text-xs font-medium border ${r.includes('Vendor match')?'bg-green-100 text-green-700 border-green-300':r.includes('Title')?'bg-blue-100 text-blue-700 border-blue-300':'bg-white text-gray-600 border-gray-300'}`}>{r}</span>)}</div></div>
+<div className="flex items-center space-x-3 ml-4 flex-shrink-0"><div className={`text-center ${sg.score>=50?'text-teal-700':sg.score>=30?'text-green-700':'text-gray-500'}`}><p className="text-2xl font-bold">{sg.score}</p><p className="text-xs">{sg.score>=50?'high':sg.score>=30?'good':'low'}</p></div>
+<button onClick={() => acceptBudgetMatch(sg.budgetLineId, m.spendId)} className={`px-4 py-2 text-white rounded-lg font-semibold text-sm ${sg.score>=50?'bg-teal-600 hover:bg-teal-700':'bg-green-600 hover:bg-green-700'}`}>Link</button>
+<button onClick={() => { setPendingBudgetMatches(prev => prev.map(p => p.spendId===m.spendId ? {...p, suggestions: p.suggestions.filter(s=>s.budgetLineId!==sg.budgetLineId)} : p).filter(p=>p.suggestions.length>0)); }} className="text-xs text-red-500 hover:text-red-700 font-semibold">Decline</button></div></div>))}</div>
+<div className="mt-4 pt-4 border-t border-gray-200"><p className="text-xs font-semibold text-gray-500 uppercase mb-2">Manually Link Budget Line</p>
+<select defaultValue="" onChange={async e => { if (e.target.value) { await acceptBudgetMatch(Number(e.target.value), m.spendId); e.target.value=''; }}} className={`w-full ${_g}`}><option value="" disabled>Select an unlinked budget line...</option>{unlinkedBl.map(bl => (<option key={bl.id} value={bl.id}>{bl.licence} — {bl.vendor||'N/A'} (€{(parseFloat(bl.eurAnnual)||0).toLocaleString()})</option>))}</select></div></div></div>); })}</div>)}
+{pendingBudgetMatches.length === 0 && <div className="bg-white rounded-lg shadow-lg p-12 mb-6 text-center"><Wallet className="w-16 h-16 text-gray-300 mx-auto mb-4"/><p className="text-gray-500">No matching budget items found.</p></div>}
+</div></div>);}
 if (currentPage === 'matching') { const isRestricted = !hasPermission('invoices.assign_all');
 const linked = invoices.filter(i => i.spendApprovalId);
 const unlinked = invoices.filter(i => !i.spendApprovalId && (!isRestricted || i.submittedBy === user.name));
 const getBudgetColor = (rem, total) => { if (total <= 0) return 'text-gray-500'; if (rem < 0) return 'text-red-600'; if (rem < total * 0.1) return 'text-orange-600'; return 'text-green-600'; };
-return (<div className={_pg}><div className="max-w-7xl mx-auto"> <div className="bg-white rounded-lg shadow-lg p-6 mb-6"><div className={_fj}> <div className="flex items-center space-x-3"><ExternalLink className="w-8 h-8 text-indigo-600"/><div><h1 className="text-2xl font-bold text-gray-800">Invoice Matching</h1><p className="text-sm text-gray-500">{pendingMatches.length} spend approvals with suggested invoices • {unlinked.length} unlinked invoices</p></div></div>
+return (<div className={_pg}><div className="w-full"> <div className="bg-white rounded-lg shadow-lg p-6 mb-6"><div className={_fj}> <div className="flex items-center space-x-3"><ExternalLink className="w-8 h-8 text-indigo-600"/><div><h1 className="text-2xl font-bold text-gray-800">Invoice Matching</h1><p className="text-sm text-gray-500">{pendingMatches.length} spend approvals with suggested invoices • {unlinked.length} unlinked invoices</p></div></div>
 <div className="flex items-center space-x-3"><button onClick={() => setCurrentPage('spend-approval')} className="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300" ><ArrowRight className="w-4 h-4 rotate-180"/><span>Back to Spend Approvals</span></button><button onClick={() => setCurrentPage('landing')} className="flex items-center space-x-2 px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200"><Home className="w-4 h-4"/><span>Dashboard</span></button></div>
 </div></div> <details className="bg-white rounded-lg shadow-lg mb-6"><summary className="px-6 py-3 cursor-pointer text-sm font-semibold text-indigo-600 hover:text-indigo-800">How matching scores work</summary><div className="px-6 pb-4"><table className="w-full text-sm text-left border-collapse"><thead><tr className="border-b border-gray-200"><th className="py-2 pr-4 font-semibold text-gray-700">Signal</th><th className="py-2 pr-4 font-semibold text-gray-700 w-16">Score</th><th className="py-2 font-semibold text-gray-700">How it works</th></tr></thead><tbody className="text-gray-600"><tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">SA Reference</td><td className="py-2 pr-4 font-bold text-blue-600">+60</td><td className="py-2">Spend approval reference (e.g. SA-0001) found in the invoice description or invoice number</td></tr><tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">Vendor match</td><td className="py-2 pr-4 font-bold text-green-600">+30</td><td className="py-2">Invoice vendor name contains the spend vendor or vice versa</td></tr><tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">Partial vendor</td><td className="py-2 pr-4 font-bold text-yellow-600">+15</td><td className="py-2">At least one word from the spend vendor appears in the invoice vendor</td></tr><tr className="border-b border-gray-100"><td className="py-2 pr-4 font-medium">Amount match</td><td className="py-2 pr-4 font-bold text-purple-600">+20</td><td className="py-2">Invoice total (converted to EUR) is within ±10% of the spend amount</td></tr></tbody></table><p className="mt-3 text-xs text-gray-500">Minimum score to suggest: <strong>15</strong>. Fully invoiced spend approvals only show high-confidence matches (score ≥ 60). All amounts are compared in EUR using current exchange rates.</p></div></details> {pendingMatches.length > 0 && (<div className="space-y-6 mb-6">{pendingMatches.map(m => { const spAmt = parseFloat(m.spendAmount)||0; return ( <div key={m.spendId} className="bg-white rounded-lg shadow-lg overflow-hidden">
 <div className="bg-indigo-50 px-6 py-4 border-b border-indigo-200"><div className={_fj}><div><div className="flex items-center space-x-3 mb-1"><span className="font-mono text-sm font-bold text-indigo-600">{m.spendRef}</span><span className="text-lg font-bold text-gray-800">{m.spendTitle}</span></div>
@@ -1129,7 +1826,7 @@ onClick={inviteUser} className="flex-1 px-4 py-2 bg-indigo-600 text-white rounde
 <h3 className="text-xl font-bold text-gray-900 mb-3">GDPR Anonymization</h3><p className="text-gray-600 mb-4">Anonymize <strong>{userToAnonymize?.name}</strong> ({userToAnonymize?.email})? This cannot be undone.</p>
 <div className="mb-4"><label className={_lb}>Type <strong>{userToAnonymize?.email}</strong> to confirm:</label><input type="text" value={gdprConfirmEmail} onChange={(e) => setGdprConfirmEmail(e.target.value)} placeholder="Enter email" className={`w-full ${_i}`}/></div>
 <div className="flex space-x-3"><button onClick={cancelGdprAnonymization} className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300">Cancel</button><button onClick={confirmGdprAnonymization} disabled={gdprConfirmEmail !== userToAnonymize?.email} className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">Anonymize</button></div></div></div>)}
-<div className="max-w-7xl mx-auto"> <div className="bg-white rounded-lg shadow-lg p-6 mb-6"> <div className={_fj+" mb-6"}> <div className="flex items-center space-x-3"> <Settings className="w-8 h-8 text-indigo-600"/> <h1 className="text-3xl font-bold text-gray-800">Settings</h1></div> <div className="flex items-center space-x-4"> <div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 rounded-lg"> <User className="w-5 h-5 text-indigo-600"/> <div className="text-sm"> <p className="font-semibold text-gray-800">{user.name}</p>
+<div className="w-full"> <div className="bg-white rounded-lg shadow-lg p-6 mb-6"> <div className={_fj+" mb-6"}> <div className="flex items-center space-x-3"> <Settings className="w-8 h-8 text-indigo-600"/> <h1 className="text-3xl font-bold text-gray-800">Settings</h1></div> <div className="flex items-center space-x-4"> <div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 rounded-lg"> <User className="w-5 h-5 text-indigo-600"/> <div className="text-sm"> <p className="font-semibold text-gray-800">{user.name}</p>
 <p className="text-xs text-gray-600">{user.role}</p></div></div> <button onClick={() => setCurrentPage('landing')} className="flex items-center space-x-2 px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200"><Home className="w-4 h-4"/><span>Dashboard</span></button> {hasPermission('reports.view') && <button onClick={() => setCurrentPage('reports')} className="flex items-center space-x-2 px-4 py-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200"><BarChart3 className="w-4 h-4"/><span>Reports</span></button>} <button onClick={logout} className="flex items-center space-x-2 px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200"><LogOut className="w-4 h-4"/><span>Logout</span></button></div></div> <div className="border-b border-gray-200 mb-6">
 <nav className="flex space-x-8"> <button
 onClick={() => setSettingsTab('users')} className={`py-4 px-1 border-b-2 font-medium text-sm ${ settingsTab === 'users' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300' } ${!canManagePermissions() ? 'hidden' : ''}`} > <div className={_fx}> <User className="w-4 h-4"/> <span>Users</span></div></button> <button
@@ -1159,52 +1856,53 @@ title="Revoke Access" > <Trash2 className="w-4 h-4"/></button>)}</div>)}
 {!canManagePermissions() && ( <div className="mt-4 bg-yellow-50 border border-yellow-200 rounded-lg p-4"> <p className="text-sm text-yellow-800">
 <strong>Note:</strong> Only Admins can manage users and permissions.</p></div>)}</div>)}
 {settingsTab === 'atoms' && ( <div>
-{(() => { const renderLookup = (key, title, items, setItems, editId, setEditId, newItem, setNewItem, prefix, hasCode=true, maxLen=5, placeholder='Code') => {
+{(() => { const apiTypeMap = {atoms:'atoms',costCentres:'cost-centres',regions:'regions',categories:'categories',businessUnits:'business-units'}; const renderLookup = (key, title, items, setItems, editId, setEditId, newItem, setNewItem, prefix, hasCode=true, maxLen=5, placeholder='Code') => {
 const isCollapsed = collapsedLookups[key];
 return (
 <div className="border border-gray-200 rounded-lg overflow-hidden">
-<button onClick={() => toggleLookup(key)} className="w-full flex items-center justify-between px-5 py-4 bg-gray-50 hover:bg-gray-100 transition">
-<h2 className="text-lg font-bold text-gray-800">{title}</h2>
-<div className="flex items-center space-x-2"><span className="text-xs text-gray-500">{items.length} items</span>{isCollapsed ? <ChevronDown className="w-5 h-5 text-gray-500"/> : <ChevronUp className="w-5 h-5 text-gray-500"/>}</div>
+<button onClick={() => toggleLookup(key)} className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition">
+<h2 className="text-sm font-bold text-gray-800">{title}</h2>
+<div className="flex items-center space-x-2"><span className="text-xs text-gray-500">{items.length}</span>{isCollapsed ? <ChevronDown className="w-4 h-4 text-gray-400"/> : <ChevronUp className="w-4 h-4 text-gray-400"/>}</div>
 </button>
-{!isCollapsed && (<div className="p-5">
-<div className="flex space-x-2 mb-4">{hasCode && <input placeholder={placeholder} value={newItem.code||''} onChange={e => setNewItem(p=>({...p,code:e.target.value.toUpperCase()}))} className={`w-28 ${_i}`} maxLength={maxLen}/>}<input placeholder="Name" value={newItem.name} onChange={e => setNewItem(p=>({...p,name:e.target.value}))} className={`flex-1 ${_i}`}/><button onClick={() => { if (hasCode ? (!newItem.code||!newItem.name) : !newItem.name) return; if (hasCode && items.find(i=>i.code===newItem.code)) { alert('Code exists'); return; } if (!hasCode && items.find(i=>i.name===newItem.name)) { alert('Name exists'); return; } const n = hasCode ? {id:Date.now(),code:newItem.code,name:newItem.name,active:true} : {id:Date.now(),name:newItem.name,active:true}; setItems(prev=>[...prev,n]); setNewItem(hasCode?{code:'',name:''}:{name:''}); logAuditRemote(`${prefix}_CREATED`, `${title} created: ${hasCode?n.code+' — ':''}${n.name}`); }} className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold">Add</button></div>
-<table className="w-full text-left"><thead><tr className="border-b border-gray-200">{hasCode && <th className={_th}>Code</th>}<th className={_th}>Name</th><th className={_th}>Status</th><th className={_th}>Actions</th></tr></thead><tbody>{items.map(item => (<tr key={item.id} className="border-b border-gray-100 hover:bg-gray-50">
-{editId===item.id ? (<>{hasCode && <td className="px-4 py-2"><input value={item.code} onChange={e => setItems(prev=>prev.map(x=>x.id===item.id?{...x,code:e.target.value.toUpperCase()}:x))} className={`w-20 ${_i}`} maxLength={maxLen}/></td>}<td className="px-4 py-2"><input value={item.name} onChange={e => setItems(prev=>prev.map(x=>x.id===item.id?{...x,name:e.target.value}:x))} className={`w-full ${_i}`}/></td><td className="px-4 py-2"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${item.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{item.active?'Active':'Inactive'}</span></td><td className="px-4 py-2"><button onClick={() => { setEditId(null); logAuditRemote(`${prefix}_UPDATED`, `${title} updated: ${hasCode?item.code+' — ':''}${item.name}`); }} className="text-xs text-green-600 font-semibold">Save</button></td></>) : (<>{hasCode && <td className="px-4 py-3 text-sm font-mono font-semibold text-indigo-600">{item.code}</td>}<td className={_td}>{item.name}</td><td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${item.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{item.active?'Active':'Inactive'}</span></td><td className="px-4 py-3 text-sm"><div className="flex space-x-2"><button onClick={() => setEditId(item.id)} className="text-xs text-indigo-600 font-semibold">Edit</button><button onClick={() => { setItems(prev=>prev.map(x=>x.id===item.id?{...x,active:!x.active}:x)); logAuditRemote(`${prefix}_${item.active?'DEACTIVATED':'ACTIVATED'}`, `${title} ${item.active?'deactivated':'activated'}: ${hasCode?item.code+' — ':''}${item.name}`); }} className={`text-xs font-semibold ${item.active?'text-red-600':'text-green-600'}`}>{item.active?'Deactivate':'Activate'}</button></div></td></>)}</tr>))}</tbody></table>
-</div>)}</div>);}; return (<div className="space-y-4">
+{!isCollapsed && (<div className="p-4">
+<div className="flex space-x-2 mb-3">{hasCode && <input placeholder={placeholder} value={newItem.code||''} onChange={e => setNewItem(p=>({...p,code:e.target.value.toUpperCase()}))} className={`w-24 ${_i} text-sm`} maxLength={maxLen}/>}<input placeholder="Name" value={newItem.name} onChange={e => setNewItem(p=>({...p,name:e.target.value}))} className={`flex-1 ${_i} text-sm`}/><button onClick={async () => { if (hasCode ? (!newItem.code||!newItem.name) : !newItem.name) return; if (hasCode && items.find(i=>i.code===newItem.code)) { alert('Code exists'); return; } if (!hasCode && items.find(i=>i.name===newItem.name)) { alert('Name exists'); return; } try { const n = await api.post('/api/lookups/'+apiTypeMap[key], hasCode ? {code:newItem.code,name:newItem.name} : {name:newItem.name}); setItems(prev=>[...prev,n]); setNewItem(hasCode?{code:'',name:''}:{name:''}); refreshAuditLog(`${prefix}_CREATED`, `Created ${title}: ${hasCode?n.code+' — ':''}${n.name}`); } catch(e) { alert(e.response?.data?.error||e.message||'Failed to create'); return; } }} className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-xs font-semibold">Add</button></div>
+<div className="max-h-[280px] overflow-y-auto"><table className="w-full text-left"><thead className="sticky top-0 bg-white"><tr className="border-b border-gray-200">{hasCode && <th className={_th}>Code</th>}<th className={_th}>Name</th><th className={_th}>Status</th><th className={_th}>Actions</th></tr></thead><tbody>{items.map(item => (<tr key={item.id} className="border-b border-gray-100 hover:bg-gray-50">
+{editId===item.id ? (<>{hasCode && <td className="px-4 py-2"><input value={item.code} onChange={e => setItems(prev=>prev.map(x=>x.id===item.id?{...x,code:e.target.value.toUpperCase()}:x))} className={`w-20 ${_i}`} maxLength={maxLen}/></td>}<td className="px-4 py-2"><input value={item.name} onChange={e => setItems(prev=>prev.map(x=>x.id===item.id?{...x,name:e.target.value}:x))} className={`w-full ${_i}`}/></td><td className="px-4 py-2"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${item.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{item.active?'Active':'Inactive'}</span></td><td className="px-4 py-2"><button onClick={async () => { try { await api.patch(`/api/lookups/${apiTypeMap[key]}/${item.id}`, hasCode ? {code:item.code,name:item.name} : {name:item.name}); setEditId(null); refreshAuditLog(`${prefix}_UPDATED`, `Updated ${title}: ${hasCode?item.code+' — ':''}${item.name}`); } catch(e) { alert(e.response?.data?.error||e.message||'Failed to save'); } }} className="text-xs text-green-600 font-semibold">Save</button></td></>) : (<>{hasCode && <td className="px-4 py-3 text-sm font-mono font-semibold text-indigo-600">{item.code}</td>}<td className={_td}>{item.name}</td><td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${item.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{item.active?'Active':'Inactive'}</span></td><td className="px-4 py-3 text-sm"><div className="flex space-x-2"><button onClick={() => setEditId(item.id)} className="text-xs text-indigo-600 font-semibold">Edit</button><button onClick={async () => { try { const resp = await api.patch(`/api/lookups/${apiTypeMap[key]}/${item.id}/toggle`); setItems(prev=>prev.map(x=>x.id===item.id?{...x,active:resp.active}:x)); refreshAuditLog(`${prefix}_${resp.active?'ACTIVATED':'DEACTIVATED'}`, `${resp.active?'Activated':'Deactivated'} ${title}: ${hasCode?item.code+' — ':''}${item.name}`); } catch(e) { alert(e.response?.data?.error||e.message||'Failed to toggle'); } }} className={`text-xs font-semibold ${item.active?'text-red-600':'text-green-600'}`}>{item.active?'Deactivate':'Activate'}</button></div></td></>)}</tr>))}</tbody></table></div>
+</div>)}</div>);}; return (<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 {renderLookup('atoms','Atoms',atoms,setAtoms,editAtom,setEditAtom,newAtom,setNewAtom,'ATOM',true,5,'Code (e.g. FIN)')}
 {renderLookup('costCentres','Cost Centres',costCentres,setCostCentres,editCC,setEditCC,newCC,setNewCC,'CC',true,6,'Code (e.g. CC600)')}
 {renderLookup('regions','Regions',regions,setRegions,editRegion,setEditRegion,newRegion,setNewRegion,'REGION',true,5,'Code (e.g. LATAM)')}
 <div className="border border-gray-200 rounded-lg overflow-hidden">
-<button onClick={() => toggleLookup('currencies')} className="w-full flex items-center justify-between px-5 py-4 bg-gray-50 hover:bg-gray-100 transition">
-<h2 className="text-lg font-bold text-gray-800">Currencies</h2>
-<div className="flex items-center space-x-2"><span className="text-xs text-gray-500">{currencies.length} items</span>{collapsedLookups.currencies ? <ChevronDown className="w-5 h-5 text-gray-500"/> : <ChevronUp className="w-5 h-5 text-gray-500"/>}</div>
+<button onClick={() => toggleLookup('currencies')} className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition">
+<h2 className="text-sm font-bold text-gray-800">Currencies</h2>
+<div className="flex items-center space-x-2"><span className="text-xs text-gray-500">{currencies.length}</span>{collapsedLookups.currencies ? <ChevronDown className="w-4 h-4 text-gray-400"/> : <ChevronUp className="w-4 h-4 text-gray-400"/>}</div>
 </button>
-{!collapsedLookups.currencies && (<div className="p-5">
-<div className="flex space-x-2 mb-4"><input placeholder="Code (e.g. JPY)" value={newCurrency.code||''} onChange={e => setNewCurrency(p=>({...p,code:e.target.value.toUpperCase()}))} className={`w-28 ${_i}`} maxLength={3}/><input placeholder="Name" value={newCurrency.name} onChange={e => setNewCurrency(p=>({...p,name:e.target.value}))} className={`flex-1 ${_i}`}/><input placeholder="Rate to EUR" type="number" step="0.000001" value={newCurrency.exchangeRateToEur||''} onChange={e => setNewCurrency(p=>({...p,exchangeRateToEur:e.target.value}))} className={`w-32 ${_i}`}/><button onClick={() => { if (!newCurrency.code||!newCurrency.name||!newCurrency.exchangeRateToEur) return; if (currencies.find(i=>i.code===newCurrency.code)) { alert('Code exists'); return; } const n = {id:Date.now(),code:newCurrency.code,name:newCurrency.name,exchangeRateToEur:newCurrency.exchangeRateToEur,active:true}; setCurrencies(prev=>[...prev,n]); setNewCurrency({code:'',name:'',exchangeRateToEur:''}); logAuditRemote('CURRENCY_CREATED', `Currency created: ${n.code} — ${n.name} (Rate: ${n.exchangeRateToEur})`); }} className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold">Add</button></div>
-<table className="w-full text-left"><thead><tr className="border-b border-gray-200"><th className={_th}>Code</th><th className={_th}>Name</th><th className={_th}>Rate to EUR</th><th className={_th}>Status</th><th className={_th}>Actions</th></tr></thead><tbody>{currencies.map(item => (<tr key={item.id} className="border-b border-gray-100 hover:bg-gray-50">
-{editCurrency===item.id ? (<><td className="px-4 py-2"><input value={item.code} onChange={e => setCurrencies(prev=>prev.map(x=>x.id===item.id?{...x,code:e.target.value.toUpperCase()}:x))} className={`w-20 ${_i}`} maxLength={3}/></td><td className="px-4 py-2"><input value={item.name} onChange={e => setCurrencies(prev=>prev.map(x=>x.id===item.id?{...x,name:e.target.value}:x))} className={`w-full ${_i}`}/></td><td className="px-4 py-2"><input type="number" step="0.000001" value={item.exchangeRateToEur||''} onChange={e => setCurrencies(prev=>prev.map(x=>x.id===item.id?{...x,exchangeRateToEur:e.target.value}:x))} className={`w-28 ${_i}`} disabled={item.code==='EUR'}/></td><td className="px-4 py-2"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${item.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{item.active?'Active':'Inactive'}</span></td><td className="px-4 py-2"><button onClick={() => { setEditCurrency(null); logAuditRemote('CURRENCY_UPDATED', `Currency updated: ${item.code} — ${item.name} (Rate: ${item.exchangeRateToEur})`); }} className="text-xs text-green-600 font-semibold">Save</button></td></>) : (<><td className="px-4 py-3 text-sm font-mono font-semibold text-indigo-600">{item.code}</td><td className={_td}>{item.name}</td><td className="px-4 py-3 text-sm font-mono">{parseFloat(item.exchangeRateToEur||1).toFixed(6)}</td><td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${item.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{item.active?'Active':'Inactive'}</span></td><td className="px-4 py-3 text-sm"><div className="flex space-x-2"><button onClick={() => setEditCurrency(item.id)} className="text-xs text-indigo-600 font-semibold">Edit</button><button onClick={() => { setCurrencies(prev=>prev.map(x=>x.id===item.id?{...x,active:!x.active}:x)); logAuditRemote(`CURRENCY_${item.active?'DEACTIVATED':'ACTIVATED'}`, `Currency ${item.active?'deactivated':'activated'}: ${item.code} — ${item.name}`); }} className={`text-xs font-semibold ${item.active?'text-red-600':'text-green-600'}`}>{item.active?'Deactivate':'Activate'}</button></div></td></>)}</tr>))}</tbody></table>
+{!collapsedLookups.currencies && (<div className="p-4">
+<div className="flex space-x-2 mb-3"><input placeholder="Code" value={newCurrency.code||''} onChange={e => setNewCurrency(p=>({...p,code:e.target.value.toUpperCase()}))} className={`w-20 ${_i} text-sm`} maxLength={3}/><input placeholder="Name" value={newCurrency.name} onChange={e => setNewCurrency(p=>({...p,name:e.target.value}))} className={`flex-1 ${_i} text-sm`}/><input placeholder="Rate" type="number" step="0.000001" value={newCurrency.exchangeRateToEur||''} onChange={e => setNewCurrency(p=>({...p,exchangeRateToEur:e.target.value}))} className={`w-24 ${_i} text-sm`}/><button onClick={async () => { if (!newCurrency.code||!newCurrency.name||!newCurrency.exchangeRateToEur) return; if (currencies.find(i=>i.code===newCurrency.code)) { alert('Code exists'); return; } try { const n = await api.post('/api/lookups/currencies', {code:newCurrency.code,name:newCurrency.name,exchangeRateToEur:parseFloat(newCurrency.exchangeRateToEur)}); setCurrencies(prev=>[...prev,n]); setNewCurrency({code:'',name:'',exchangeRateToEur:''}); refreshAuditLog('CURRENCY_CREATED', `Created currency: ${n.code} — ${n.name}`); } catch(e) { alert(e.response?.data?.error||e.message||'Failed to create'); } }} className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-xs font-semibold">Add</button></div>
+<div className="max-h-[280px] overflow-y-auto"><table className="w-full text-left"><thead className="sticky top-0 bg-white"><tr className="border-b border-gray-200"><th className={_th}>Code</th><th className={_th}>Name</th><th className={_th}>Rate</th><th className={_th}>Status</th><th className={_th}>Actions</th></tr></thead><tbody>{currencies.map(item => (<tr key={item.id} className="border-b border-gray-100 hover:bg-gray-50">
+{editCurrency===item.id ? (<><td className="px-4 py-2"><input value={item.code} onChange={e => setCurrencies(prev=>prev.map(x=>x.id===item.id?{...x,code:e.target.value.toUpperCase()}:x))} className={`w-20 ${_i}`} maxLength={3}/></td><td className="px-4 py-2"><input value={item.name} onChange={e => setCurrencies(prev=>prev.map(x=>x.id===item.id?{...x,name:e.target.value}:x))} className={`w-full ${_i}`}/></td><td className="px-4 py-2"><input type="number" step="0.000001" value={item.exchangeRateToEur||''} onChange={e => setCurrencies(prev=>prev.map(x=>x.id===item.id?{...x,exchangeRateToEur:e.target.value}:x))} className={`w-28 ${_i}`} disabled={item.code==='EUR'}/></td><td className="px-4 py-2"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${item.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{item.active?'Active':'Inactive'}</span></td><td className="px-4 py-2"><button onClick={async () => { try { await api.patch(`/api/lookups/currencies/${item.id}`, {code:item.code,name:item.name,exchangeRateToEur:parseFloat(item.exchangeRateToEur)}); setEditCurrency(null); refreshAuditLog('CURRENCY_UPDATED', `Updated currency: ${item.code} — ${item.name}`); } catch(e) { alert(e.response?.data?.error||e.message||'Failed to save'); } }} className="text-xs text-green-600 font-semibold">Save</button></td></>) : (<><td className="px-4 py-3 text-sm font-mono font-semibold text-indigo-600">{item.code}</td><td className={_td}>{item.name}</td><td className="px-4 py-3 text-sm font-mono">{parseFloat(item.exchangeRateToEur||1).toFixed(6)}</td><td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${item.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{item.active?'Active':'Inactive'}</span></td><td className="px-4 py-3 text-sm"><div className="flex space-x-2"><button onClick={() => setEditCurrency(item.id)} className="text-xs text-indigo-600 font-semibold">Edit</button><button onClick={async () => { try { const resp = await api.patch(`/api/lookups/currencies/${item.id}/toggle`); setCurrencies(prev=>prev.map(x=>x.id===item.id?{...x,active:resp.active}:x)); refreshAuditLog(`CURRENCY_${resp.active?'ACTIVATED':'DEACTIVATED'}`, `${resp.active?'Activated':'Deactivated'} currency: ${item.code} — ${item.name}`); } catch(e) { alert(e.response?.data?.error||e.message||'Failed to toggle'); } }} className={`text-xs font-semibold ${item.active?'text-red-600':'text-green-600'}`}>{item.active?'Deactivate':'Activate'}</button></div></td></>)}</tr>))}</tbody></table></div>
 </div>)}</div>
 {renderLookup('categories','Spend Categories',categories,setCategories,editCategory,setEditCategory,newCategory,setNewCategory,'CATEGORY',false)}
+{renderLookup('businessUnits','Business Units',businessUnits,setBusinessUnits,editBU,setEditBU,newBU,setNewBU,'BU',false)}
 <div className="border border-gray-200 rounded-lg overflow-hidden">
-<button onClick={() => toggleLookup('functions')} className="w-full flex items-center justify-between px-5 py-4 bg-gray-50 hover:bg-gray-100 transition">
-<h2 className="text-lg font-bold text-gray-800">Functions / Departments</h2>
-<div className="flex items-center space-x-2"><span className="text-xs text-gray-500">{functions.length} items</span>{collapsedLookups.functions ? <ChevronDown className="w-5 h-5 text-gray-500"/> : <ChevronUp className="w-5 h-5 text-gray-500"/>}</div>
+<button onClick={() => toggleLookup('functions')} className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition">
+<h2 className="text-sm font-bold text-gray-800">Functions / Departments</h2>
+<div className="flex items-center space-x-2"><span className="text-xs text-gray-500">{functions.length}</span>{collapsedLookups.functions ? <ChevronDown className="w-4 h-4 text-gray-400"/> : <ChevronUp className="w-4 h-4 text-gray-400"/>}</div>
 </button>
-{!collapsedLookups.functions && (<div className="p-5">
-<div className="flex space-x-2 mb-4"><input placeholder="Function name" value={newFunction.name} onChange={e => setNewFunction(p=>({...p,name:e.target.value}))} className={`flex-1 ${_i}`}/><select value={newFunction.approver} onChange={e => setNewFunction(p=>({...p,approver:e.target.value}))} className={`w-48 ${_i}`}><option value="">Approver...</option>{mockUsers.filter(u=>{ const rl = roles.find(r=>r.name===u.role); return rl && rl.permissions.includes('spend.approve') && u.status==='Active'; }).map(u=>(<option key={u.id} value={u.name}>{u.name}</option>))}</select><button onClick={() => { if (!newFunction.name||!newFunction.approver) return; if (functions.find(f=>f.name===newFunction.name)) { alert('Duplicate function'); return; } const f={id:Date.now(),name:newFunction.name,approver:newFunction.approver,active:true}; setFunctions(prev=>[...prev,f]); setNewFunction({name:'',approver:''}); logAuditRemote('FUNCTION_CREATED', `Function created: ${f.name} (Approver: ${f.approver})`); }} className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold">Add</button></div>
-<table className="w-full text-left"><thead><tr className="border-b border-gray-200"><th className={_th}>Function Name</th><th className={_th}>Approver</th><th className={_th}>Status</th><th className={_th}>Actions</th></tr></thead><tbody>{functions.map(f => (<tr key={f.id} className="border-b border-gray-100 hover:bg-gray-50">
-{editFunction===f.id ? (<><td className="px-4 py-2"><input value={f.name} onChange={e => setFunctions(prev=>prev.map(x=>x.id===f.id?{...x,name:e.target.value}:x))} className={`w-full ${_i}`}/></td><td className="px-4 py-2"><select value={f.approver} onChange={e => setFunctions(prev=>prev.map(x=>x.id===f.id?{...x,approver:e.target.value}:x))} className={`w-full ${_i}`}>{mockUsers.filter(u=>{ const rl = roles.find(r=>r.name===u.role); return rl && rl.permissions.includes('spend.approve') && u.status==='Active'; }).map(u=>(<option key={u.id} value={u.name}>{u.name}</option>))}</select></td><td className="px-4 py-2"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${f.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{f.active?'Active':'Inactive'}</span></td><td className="px-4 py-2"><button onClick={() => { setEditFunction(null); logAuditRemote('FUNCTION_UPDATED', `Function updated: ${f.name} (Approver: ${f.approver})`); }} className="text-xs text-green-600 font-semibold">Save</button></td></>) : (<><td className={_td}>{f.name}</td><td className="px-4 py-3 text-sm"><span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded text-xs font-semibold">{f.approver}</span></td><td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${f.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{f.active?'Active':'Inactive'}</span></td><td className="px-4 py-3 text-sm"><div className="flex space-x-2"><button onClick={() => setEditFunction(f.id)} className="text-xs text-indigo-600 font-semibold">Edit</button><button onClick={() => { setFunctions(prev=>prev.map(x=>x.id===f.id?{...x,active:!x.active}:x)); logAuditRemote(f.active?'FUNCTION_DEACTIVATED':'FUNCTION_ACTIVATED', `Function ${f.active?'deactivated':'activated'}: ${f.name}`); }} className={`text-xs font-semibold ${f.active?'text-red-600':'text-green-600'}`}>{f.active?'Deactivate':'Activate'}</button></div></td></>)}</tr>))}</tbody></table>
+{!collapsedLookups.functions && (<div className="p-4">
+<div className="flex space-x-2 mb-3"><input placeholder="Function name" value={newFunction.name} onChange={e => setNewFunction(p=>({...p,name:e.target.value}))} className={`flex-1 ${_i}`}/><select value={newFunction.approver} onChange={e => setNewFunction(p=>({...p,approver:e.target.value}))} className={`w-48 ${_i}`}><option value="">Approver...</option>{mockUsers.filter(u=>{ const rl = roles.find(r=>r.name===u.role); return rl && rl.permissions.includes('spend.approve') && u.status==='Active'; }).map(u=>(<option key={u.id} value={u.name}>{u.name}</option>))}</select><button onClick={async () => { if (!newFunction.name||!newFunction.approver) return; if (functions.find(f=>f.name===newFunction.name)) { alert('Duplicate function'); return; } const approverUser = mockUsers.find(u=>u.name===newFunction.approver); try { const resp = await api.post('/api/lookups/functions', {name:newFunction.name, approverId:approverUser?.id||null}); setFunctions(prev=>[...prev,{...resp, approverId:resp.approver?.id||resp.approverId||null, approver:resp.approver?.name||newFunction.approver}]); setNewFunction({name:'',approver:''}); refreshAuditLog('FUNCTION_CREATED', `Created function: ${resp.name}`); } catch(e) { alert(e.response?.data?.error||e.message||'Failed to create'); } }} className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-xs font-semibold">Add</button></div>
+<div className="max-h-[280px] overflow-y-auto"><table className="w-full text-left"><thead className="sticky top-0 bg-white"><tr className="border-b border-gray-200"><th className={_th}>Name</th><th className={_th}>Approver</th><th className={_th}>Status</th><th className={_th}>Actions</th></tr></thead><tbody>{functions.map(f => (<tr key={f.id} className="border-b border-gray-100 hover:bg-gray-50">
+{editFunction===f.id ? (<><td className="px-4 py-2"><input value={f.name} onChange={e => setFunctions(prev=>prev.map(x=>x.id===f.id?{...x,name:e.target.value}:x))} className={`w-full ${_i}`}/></td><td className="px-4 py-2"><select value={f.approver} onChange={e => setFunctions(prev=>prev.map(x=>x.id===f.id?{...x,approver:e.target.value}:x))} className={`w-full ${_i}`}>{mockUsers.filter(u=>{ const rl = roles.find(r=>r.name===u.role); return rl && rl.permissions.includes('spend.approve') && u.status==='Active'; }).map(u=>(<option key={u.id} value={u.name}>{u.name}</option>))}</select></td><td className="px-4 py-2"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${f.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{f.active?'Active':'Inactive'}</span></td><td className="px-4 py-2"><button onClick={async () => { const approverUser = mockUsers.find(u=>u.name===f.approver); try { await api.patch(`/api/lookups/functions/${f.id}`, {name:f.name, approverId:approverUser?.id||null}); setEditFunction(null); refreshAuditLog('FUNCTION_UPDATED', `Updated function: ${f.name}`); } catch(e) { alert(e.response?.data?.error||e.message||'Failed to save'); } }} className="text-xs text-green-600 font-semibold">Save</button></td></>) : (<><td className={_td}>{f.name}</td><td className="px-4 py-3 text-sm"><span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded text-xs font-semibold">{f.approver}</span></td><td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${f.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{f.active?'Active':'Inactive'}</span></td><td className="px-4 py-3 text-sm"><div className="flex space-x-2"><button onClick={() => setEditFunction(f.id)} className="text-xs text-indigo-600 font-semibold">Edit</button><button onClick={async () => { try { const resp = await api.patch(`/api/lookups/functions/${f.id}/toggle`); setFunctions(prev=>prev.map(x=>x.id===f.id?{...x,active:resp.active}:x)); refreshAuditLog(`FUNCTION_${resp.active?'ACTIVATED':'DEACTIVATED'}`, `${resp.active?'Activated':'Deactivated'} function: ${f.name}`); } catch(e) { alert(e.response?.data?.error||e.message||'Failed to toggle'); } }} className={`text-xs font-semibold ${f.active?'text-red-600':'text-green-600'}`}>{f.active?'Deactivate':'Activate'}</button></div></td></>)}</tr>))}</tbody></table></div>
 </div>)}</div>
 <div className="border border-gray-200 rounded-lg overflow-hidden">
-<button onClick={() => toggleLookup('projects')} className="w-full flex items-center justify-between px-5 py-4 bg-gray-50 hover:bg-gray-100 transition">
-<h2 className="text-lg font-bold text-gray-800">Projects</h2>
-<div className="flex items-center space-x-2"><span className="text-xs text-gray-500">{projects.length} items</span>{collapsedLookups.projects ? <ChevronDown className="w-5 h-5 text-gray-500"/> : <ChevronUp className="w-5 h-5 text-gray-500"/>}</div>
+<button onClick={() => toggleLookup('projects')} className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition">
+<h2 className="text-sm font-bold text-gray-800">Projects</h2>
+<div className="flex items-center space-x-2"><span className="text-xs text-gray-500">{projects.length}</span>{collapsedLookups.projects ? <ChevronDown className="w-4 h-4 text-gray-400"/> : <ChevronUp className="w-4 h-4 text-gray-400"/>}</div>
 </button>
-{!collapsedLookups.projects && (<div className="p-5">
-<div className="flex space-x-2 mb-4"><input placeholder="Project name" value={newProject.name} onChange={e => setNewProject(p=>({...p,name:e.target.value}))} className={`flex-1 ${_i}`}/><input placeholder="Description" value={newProject.description} onChange={e => setNewProject(p=>({...p,description:e.target.value}))} className={`flex-1 ${_i}`}/><button onClick={() => { if (!newProject.name) return; if (projects.find(p=>p.name===newProject.name)) { alert('Duplicate project name'); return; } const p={id:Date.now(),name:newProject.name,description:newProject.description,active:true}; setProjects(prev=>[...prev,p]); setNewProject({name:'',description:''}); logAuditRemote('PROJECT_CREATED', `Project created: ${p.name}${p.description?' — '+p.description:''}`); }} className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold">Add</button></div>
-<table className="w-full text-left"><thead><tr className="border-b border-gray-200"><th className={_th}>Name</th><th className={_th}>Description</th><th className={_th}>Status</th><th className={_th}>Actions</th></tr></thead><tbody>{projects.map(p => (<tr key={p.id} className="border-b border-gray-100 hover:bg-gray-50">
-{editProject===p.id ? (<><td className="px-4 py-2"><input value={p.name} onChange={e => setProjects(prev=>prev.map(x=>x.id===p.id?{...x,name:e.target.value}:x))} className={`w-full ${_i}`}/></td><td className="px-4 py-2"><input value={p.description} onChange={e => setProjects(prev=>prev.map(x=>x.id===p.id?{...x,description:e.target.value}:x))} className={`w-full ${_i}`}/></td><td className="px-4 py-2"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${p.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{p.active?'Active':'Inactive'}</span></td><td className="px-4 py-2"><button onClick={() => { setEditProject(null); logAuditRemote('PROJECT_UPDATED', `Project updated: ${p.name}${p.description?' — '+p.description:''}`); }} className="text-xs text-green-600 font-semibold">Save</button></td></>) : (<><td className={_td}>{p.name}</td><td className={_td}>{p.description||'—'}</td><td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${p.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{p.active?'Active':'Inactive'}</span></td><td className="px-4 py-3 text-sm"><div className="flex space-x-2"><button onClick={() => setEditProject(p.id)} className="text-xs text-indigo-600 font-semibold">Edit</button><button onClick={() => { setProjects(prev=>prev.map(x=>x.id===p.id?{...x,active:!x.active}:x)); logAuditRemote(p.active?'PROJECT_DEACTIVATED':'PROJECT_ACTIVATED', `Project ${p.active?'deactivated':'activated'}: ${p.name}`); }} className={`text-xs font-semibold ${p.active?'text-red-600':'text-green-600'}`}>{p.active?'Deactivate':'Activate'}</button></div></td></>)}</tr>))}</tbody></table>
+{!collapsedLookups.projects && (<div className="p-4">
+<div className="flex space-x-2 mb-3"><input placeholder="Project name" value={newProject.name} onChange={e => setNewProject(p=>({...p,name:e.target.value}))} className={`flex-1 ${_i}`}/><input placeholder="Description" value={newProject.description} onChange={e => setNewProject(p=>({...p,description:e.target.value}))} className={`flex-1 ${_i}`}/><button onClick={async () => { if (!newProject.name) return; if (projects.find(p=>p.name===newProject.name)) { alert('Duplicate project name'); return; } try { const p = await api.post('/api/lookups/projects', {name:newProject.name, description:newProject.description||null}); setProjects(prev=>[...prev,p]); setNewProject({name:'',description:''}); refreshAuditLog('PROJECT_CREATED', `Created project: ${p.name}`); } catch(e) { alert(e.response?.data?.error||e.message||'Failed to create'); } }} className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-xs font-semibold">Add</button></div>
+<div className="max-h-[280px] overflow-y-auto"><table className="w-full text-left"><thead className="sticky top-0 bg-white"><tr className="border-b border-gray-200"><th className={_th}>Name</th><th className={_th}>Description</th><th className={_th}>Status</th><th className={_th}>Actions</th></tr></thead><tbody>{projects.map(p => (<tr key={p.id} className="border-b border-gray-100 hover:bg-gray-50">
+{editProject===p.id ? (<><td className="px-4 py-2"><input value={p.name} onChange={e => setProjects(prev=>prev.map(x=>x.id===p.id?{...x,name:e.target.value}:x))} className={`w-full ${_i}`}/></td><td className="px-4 py-2"><input value={p.description} onChange={e => setProjects(prev=>prev.map(x=>x.id===p.id?{...x,description:e.target.value}:x))} className={`w-full ${_i}`}/></td><td className="px-4 py-2"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${p.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{p.active?'Active':'Inactive'}</span></td><td className="px-4 py-2"><button onClick={async () => { try { await api.patch(`/api/lookups/projects/${p.id}`, {name:p.name, description:p.description||null}); setEditProject(null); refreshAuditLog('PROJECT_UPDATED', `Updated project: ${p.name}`); } catch(e) { alert(e.response?.data?.error||e.message||'Failed to save'); } }} className="text-xs text-green-600 font-semibold">Save</button></td></>) : (<><td className={_td}>{p.name}</td><td className={_td}>{p.description||'—'}</td><td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${p.active?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{p.active?'Active':'Inactive'}</span></td><td className="px-4 py-3 text-sm"><div className="flex space-x-2"><button onClick={() => setEditProject(p.id)} className="text-xs text-indigo-600 font-semibold">Edit</button><button onClick={async () => { try { const resp = await api.patch(`/api/lookups/projects/${p.id}/toggle`); setProjects(prev=>prev.map(x=>x.id===p.id?{...x,active:resp.active}:x)); refreshAuditLog(`PROJECT_${resp.active?'ACTIVATED':'DEACTIVATED'}`, `${resp.active?'Activated':'Deactivated'} project: ${p.name}`); } catch(e) { alert(e.response?.data?.error||e.message||'Failed to toggle'); } }} className={`text-xs font-semibold ${p.active?'text-red-600':'text-green-600'}`}>{p.active?'Deactivate':'Activate'}</button></div></td></>)}</tr>))}</tbody></table></div>
 </div>)}</div></div>); })()}</div>)}
 {settingsTab === 'audit' && ( <div> <div className="mb-6"> <h2 className="text-xl font-bold text-gray-800 mb-2">Audit Log</h2> <p className="text-gray-600">System activity log</p></div> <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6"> <div className="grid grid-cols-1 md:grid-cols-4 gap-4"> <div className="md:col-span-2"> <label className={_lb}>Search</label> <input type="text"
 value={auditSearchTerm}
@@ -1218,7 +1916,7 @@ onChange={(e) => setAuditDateFrom(e.target.value)} className={`w-full ${_i}`}/><
 onChange={(e) => setAuditDateTo(e.target.value)} className={`w-full ${_i}`}/></div></div> <div className="mt-3 text-sm text-gray-600"> Showing <strong>{getFilteredAuditLog().length}</strong> of <strong>{auditLog.length}</strong> entries</div></div> {auditLog.length === 0 ? ( <div className="text-center py-12 text-gray-500"> <AlertCircle className="w-12 h-12 mx-auto mb-4 text-gray-400"/> <p>No audit entries yet.</p></div> ) : getFilteredAuditLog().length === 0 ? ( <div className="text-center py-12 text-gray-500">
 <AlertCircle className="w-12 h-12 mx-auto mb-4 text-gray-400"/> <p>No entries match filters.</p> <button
 onClick={clearAuditFilters} className="mt-4 text-indigo-600 hover:text-indigo-800 underline" > Clear Filters</button></div> ) : ( <div className="overflow-x-auto"> <table className="w-full"> <thead className="bg-gray-50"> <tr> <th className="px-6 py-3 text-left text-sm font-semibold text-gray-700">Timestamp</th> <th className="px-6 py-3 text-left text-sm font-semibold text-gray-700">Action</th> <th className="px-6 py-3 text-left text-sm font-semibold text-gray-700">Details</th>
-<th className="px-6 py-3 text-left text-sm font-semibold text-gray-700">Performed By</th></tr></thead> <tbody className="divide-y divide-gray-200"> {getFilteredAuditLog().slice().reverse().map((entry) => ( <tr key={entry.id} className="hover:bg-gray-50"> <td className="px-6 py-4 text-sm text-gray-600"> {new Date(entry.performedAt || entry.deletedAt).toLocaleString()}</td> <td className="px-6 py-4 text-sm"> <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
+<th className="px-6 py-3 text-left text-sm font-semibold text-gray-700">Performed By</th></tr></thead> <tbody className="divide-y divide-gray-200"> {getFilteredAuditLog().map((entry) => ( <tr key={entry.id} className="hover:bg-gray-50"> <td className="px-6 py-4 text-sm text-gray-600"> {new Date(entry.performedAt || entry.deletedAt).toLocaleString()}</td> <td className="px-6 py-4 text-sm"> <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
 entry.action === 'DELETE' || entry.action === 'INVOICE_REJECTED' || entry.action === 'BULK_REJECTION' || entry.action === 'USER_REMOVED' || entry.action === 'LOGIN_FAILED' || entry.action === 'SPEND_REJECTED' ? 'bg-red-100 text-red-700' : entry.action === 'ROLE_CHANGE' || entry.action === 'USER_LOGIN' || entry.action === 'USER_LOGOUT' ? 'bg-blue-100 text-blue-700' : entry.action === 'INVOICE_APPROVED' || entry.action === 'BULK_APPROVAL' || entry.action === 'SPEND_APPROVED' ? 'bg-green-100 text-green-700' :
 entry.action === 'INVOICE_CREATED' || entry.action === 'FILES_SELECTED' || entry.action === 'USER_INVITED' || entry.action === 'INVITATION_RESENT' || entry.action === 'OTP_SENT' || entry.action === 'SPEND_REQUEST' ? 'bg-purple-100 text-purple-700' : entry.action === 'FILTER_APPLIED' || entry.action === 'FILTERS_CLEARED' ? 'bg-yellow-100 text-yellow-700' : entry.action === 'DATA_EXPORTED' || entry.action === 'INVOICE_MATCHED' ? 'bg-indigo-100 text-indigo-700' : entry.action.startsWith('ATOM_') || entry.action.startsWith('CC_') || entry.action.startsWith('REGION_') || entry.action.startsWith('CURRENCY_') || entry.action.startsWith('CATEGORY_') || entry.action.startsWith('FUNCTION_') ? 'bg-teal-100 text-teal-700' :
 entry.action === 'GDPR_ANONYMIZATION' || entry.action === 'INVOICE_UNLINKED' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700' }`}> {entry.action.replace(/_/g, ' ')}</span> {entry.gdprCompliance && ( <span className="ml-2 px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-semibold" title="GDPR Compliant - Original data preserved for legal compliance"> GDPR</span>)}</td> <td className="px-6 py-4 text-sm text-gray-900"> {entry.action === 'DELETE' ? ( <div> <p className="font-semibold">Invoice: {entry.invoiceNumber}</p>
@@ -1364,7 +2062,7 @@ onClick={() => initiateDeleteInvoice(invoice)} className="flex items-center spac
 <button onClick={() => setCurrentPage('landing')} className="flex items-center space-x-2 px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200"><Home className="w-4 h-4"/><span>Dashboard</span></button> <button
 onClick={() => setSelectedInvoice(null)} className="flex items-center space-x-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200" > <span>Close</span></button></div></div> <div className={_fj}> <div> <h1 className="text-3xl font-bold text-gray-800">Invoice Details</h1> <p className="text-gray-600 mt-1">{invoice.invoiceNumber}</p></div></div></div> <div className="grid grid-cols-1 lg:grid-cols-3 gap-6"> <div className="lg:col-span-2 space-y-6"> <div className={_cd}> <h2 className={_h2}>Invoice Information</h2> <div className="grid grid-cols-2 gap-6"> <div> <label className="text-sm text-gray-600">Invoice Number</label> <p className="text-lg font-semibold text-gray-800">{invoice.invoiceNumber}</p></div> <div>
 <label className="text-sm text-gray-600">Vendor</label> <p className="text-lg font-semibold text-gray-800">{invoice.vendor}</p></div> <div> <label className="text-sm text-gray-600">Invoice Date</label> <p className="text-lg font-semibold text-gray-800">{invoice.date}</p></div> <div> <label className="text-sm text-gray-600">Due Date</label> <p className="text-lg font-semibold text-gray-800">{invoice.dueDate}</p></div> <div> <label className="text-sm text-gray-600">Subtotal</label> <p className="text-lg font-semibold text-gray-800">{currencySymbol(invoice.currency)}{invoice.amount}</p></div> <div>
-<label className="text-sm text-gray-600">Tax Amount</label> <p className="text-lg font-semibold text-gray-800">{currencySymbol(invoice.currency)}{invoice.taxAmount}{invoice.vatRate != null && invoice.vatRate > 0 ? ` (${(invoice.vatRate * 100).toFixed(0)}%)` : ''}</p></div> <div className="col-span-2"> <label className="text-sm text-gray-600">Total Amount</label> <p className="text-2xl font-bold text-green-600">{currencySymbol(invoice.currency)}{invoice.totalAmount || (parseFloat(invoice.amount) + parseFloat(invoice.taxAmount)).toFixed(2)}</p></div> {invoice.paymentTerms && (<div> <label className="text-sm text-gray-600">Payment Terms</label> <p className="text-lg font-semibold text-gray-800">{invoice.paymentTerms}</p></div>)} {invoice.currency && (<div> <label className="text-sm text-gray-600">Currency</label> <p className="text-lg font-semibold text-gray-800">{invoice.currency}</p></div>)} <div className="col-span-2"> <label className="text-sm text-gray-600">Description</label> <p className="text-gray-800">{invoice.description}</p></div></div></div>
+<label className="text-sm text-gray-600">Tax Amount</label> <p className="text-lg font-semibold text-gray-800">{currencySymbol(invoice.currency)}{invoice.taxAmount}{invoice.vatRate != null && invoice.vatRate > 0 ? ` (${(invoice.vatRate * 100).toFixed(0)}%)` : ''}</p></div> <div className="col-span-2"> <label className="text-sm text-gray-600">Total Amount</label> <p className="text-2xl font-bold text-green-600">{currencySymbol(invoice.currency)}{invoice.totalAmount || (parseFloat(invoice.amount) + parseFloat(invoice.taxAmount)).toFixed(2)}</p></div> {invoice.paymentTerms && (<div> <label className="text-sm text-gray-600">Payment Terms</label> <p className="text-lg font-semibold text-gray-800">{invoice.paymentTerms}</p></div>)} {invoice.currency && (<div> <label className="text-sm text-gray-600">Currency</label> <p className="text-lg font-semibold text-gray-800">{invoice.currency}</p></div>)} {invoice.businessUnit && (<div> <label className="text-sm text-gray-600">Business Unit</label> <p className="text-lg font-semibold text-gray-800">{invoice.businessUnit}</p></div>)} <div className="col-span-2"> <label className="text-sm text-gray-600">Description</label> <p className="text-gray-800">{invoice.description}</p></div></div></div>
 {invoice.supplier && (invoice.supplier.company || invoice.supplier.address || invoice.supplier.vat_number) && (<div className={_cd}> <h2 className={_h2}>Supplier Details</h2> <div className="grid grid-cols-2 gap-4"> {invoice.supplier.company && (<div className="col-span-2"> <label className="text-sm text-gray-600">Company</label> <p className="text-lg font-semibold text-gray-800">{invoice.supplier.company}</p></div>)} {invoice.supplier.address && (<div className="col-span-2"> <label className="text-sm text-gray-600">Address</label> <p className="text-sm text-gray-800">{invoice.supplier.address}</p></div>)} {invoice.supplier.vat_number && (<div> <label className="text-sm text-gray-600">VAT Number</label> <p className="text-sm font-semibold text-gray-800">{invoice.supplier.vat_number}</p></div>)} {invoice.supplier.phone && (<div> <label className="text-sm text-gray-600">Phone</label> <p className="text-sm text-gray-800">{invoice.supplier.phone}</p></div>)} {invoice.supplier.email && (<div> <label className="text-sm text-gray-600">Email</label> <p className="text-sm text-gray-800">{invoice.supplier.email}</p></div>)} {invoice.supplier.website && (<div> <label className="text-sm text-gray-600">Website</label> <p className="text-sm text-gray-800">{invoice.supplier.website}</p></div>)}</div></div>)}
 {invoice.customer && (invoice.customer.company || invoice.customer.address) && (<div className={_cd}> <h2 className={_h2}>Customer / Bill-to</h2> <div className="grid grid-cols-2 gap-4"> {invoice.customer.company && (<div className="col-span-2"> <label className="text-sm text-gray-600">Company</label> <p className="text-lg font-semibold text-gray-800">{invoice.customer.company}</p></div>)} {invoice.customer.attention && (<div className="col-span-2"> <label className="text-sm text-gray-600">Attention</label> <p className="text-sm text-gray-800">{invoice.customer.attention}</p></div>)} {invoice.customer.address && (<div className="col-span-2"> <label className="text-sm text-gray-600">Address</label> <p className="text-sm text-gray-800">{invoice.customer.address}</p></div>)} {invoice.customer.vat_number && (<div> <label className="text-sm text-gray-600">VAT Number</label> <p className="text-sm font-semibold text-gray-800">{invoice.customer.vat_number}</p></div>)}</div></div>)}
 <div className={_cd}> <h2 className={_h2}>Linked Spend Approval</h2> {invoice.spendApprovalId ? (() => { const sp = spendApprovals.find(s => s.id === invoice.spendApprovalId); return sp ? ( <div className="border border-indigo-200 bg-indigo-50 rounded-lg p-4"> <div className="flex items-center justify-between mb-2"><h3 className="font-semibold text-indigo-800"><button onClick={() => { setSelectedInvoice(null); setCurrentPage('spend-approval'); setSpendView('list'); setSelectedSpend(sp); }} className="hover:text-indigo-600 underline">{sp.ref} — {sp.title}</button></h3><button onClick={() => unlinkInvoice(invoice.id)} className="text-xs text-red-600 hover:text-red-800 font-semibold">Unlink</button></div>
@@ -1379,20 +2077,130 @@ href={invoice.fileUrl}
 download={invoice.fileName} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"  > Download</a></div>)}</div></div>)}</div> <div className="space-y-6">
 <div className={_cd}> <h2 className={_h2}>Submission Info</h2> <div className="space-y-3"> <div> <label className="text-sm text-gray-600">Submitted By</label> <p className="font-semibold text-gray-800">{invoice.submittedBy}</p></div> <div> <label className="text-sm text-gray-600">Submitted Date</label> <p className="text-sm text-gray-800"> {new Date(invoice.submittedDate).toLocaleString()}</p></div></div></div>
 {invoice.bankDetails && (invoice.bankDetails.bank || invoice.bankDetails.account_number || invoice.bankDetails.iban) && (<div className={_cd}> <h2 className={_h2}>Bank Details</h2> <div className="space-y-3"> {invoice.bankDetails.bank && (<div> <label className="text-sm text-gray-600">Bank</label> <p className="font-semibold text-gray-800">{invoice.bankDetails.bank}</p></div>)} {invoice.bankDetails.account_number && (<div> <label className="text-sm text-gray-600">Account Number</label> <p className="text-sm font-mono text-gray-800">{invoice.bankDetails.account_number}</p></div>)} {invoice.bankDetails.sort_code && (<div> <label className="text-sm text-gray-600">Sort Code</label> <p className="text-sm font-mono text-gray-800">{invoice.bankDetails.sort_code}</p></div>)} {invoice.bankDetails.iban && (<div> <label className="text-sm text-gray-600">IBAN</label> <p className="text-sm font-mono text-gray-800">{invoice.bankDetails.iban}</p></div>)} {invoice.bankDetails.swift_bic && (<div> <label className="text-sm text-gray-600">SWIFT/BIC</label> <p className="text-sm font-mono text-gray-800">{invoice.bankDetails.swift_bic}</p></div>)}</div></div>)}</div></div></div></div>);} return (
-<div className={_pg}> {showDeleteConfirmation && invoiceToDelete && ( <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"> <div className="bg-white rounded-lg shadow-2xl max-w-md w-full p-6"> <div className="flex items-center space-x-3 mb-4"> <div className="flex items-center justify-center h-12 w-12 rounded-full bg-red-100"> <Trash2 className="h-6 w-6 text-red-600"/></div> <h3 className="text-xl font-bold text-gray-900">Delete Invoice</h3></div> <p className="text-gray-600 mb-4"> This action cannot be undone.</p> <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4"> <p className="text-sm text-yellow-800"> Please type <span className="font-bold">{invoiceToDelete.invoiceNumber}</span> to confirm deletion:</p></div> <input type="text" value={deleteConfirmationInput} onChange={(e) => setDeleteConfirmationInput(e.target.value)} placeholder="Type invoice number here" className="w-full px-4 py-2 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-red-500"/> <div className="flex space-x-3"> <button onClick={cancelDeleteInvoice} className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"> Cancel</button> <button onClick={confirmDeleteInvoice} disabled={deleteConfirmationInput !== invoiceToDelete.invoiceNumber} className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed"> Delete Invoice</button></div></div></div>)} <div className="max-w-7xl mx-auto"> <div className="bg-white rounded-lg shadow-lg p-6 mb-6"> <div className={_fj+" mb-6"}> <div className="flex items-center space-x-3"> <FileText className="w-8 h-8 text-indigo-600"/> <h1 className="text-3xl font-bold text-gray-800">Invoices</h1></div> <div className="flex items-center space-x-4"> <div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 rounded-lg"> <User className="w-5 h-5 text-indigo-600"/>
+<div className={_pg}> {showDeleteConfirmation && invoiceToDelete && ( <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"> <div className="bg-white rounded-lg shadow-2xl max-w-md w-full p-6"> <div className="flex items-center space-x-3 mb-4"> <div className="flex items-center justify-center h-12 w-12 rounded-full bg-red-100"> <Trash2 className="h-6 w-6 text-red-600"/></div> <h3 className="text-xl font-bold text-gray-900">Delete Invoice</h3></div> <p className="text-gray-600 mb-4"> This action cannot be undone.</p> <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4"> <p className="text-sm text-yellow-800"> Please type <span className="font-bold">{invoiceToDelete.invoiceNumber}</span> to confirm deletion:</p></div> <input type="text" value={deleteConfirmationInput} onChange={(e) => setDeleteConfirmationInput(e.target.value)} placeholder="Type invoice number here" className="w-full px-4 py-2 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-red-500"/> <div className="flex space-x-3"> <button onClick={cancelDeleteInvoice} className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"> Cancel</button> <button onClick={confirmDeleteInvoice} disabled={deleteConfirmationInput !== invoiceToDelete.invoiceNumber} className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed"> Delete Invoice</button></div></div></div>)} <div className="w-full"> <div className="bg-white rounded-lg shadow-lg p-6 mb-6"> <div className={_fj+" mb-6"}> <div className="flex items-center space-x-3"> <FileText className="w-8 h-8 text-indigo-600"/> <h1 className="text-3xl font-bold text-gray-800">Invoices</h1></div> <div className="flex items-center space-x-4"> <div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 rounded-lg"> <User className="w-5 h-5 text-indigo-600"/>
 <div className="text-sm"> <p className="font-semibold text-gray-800">{user.name}</p> <p className="text-xs text-gray-600">{user.role}</p></div></div> <button onClick={() => setCurrentPage('landing')} className="flex items-center space-x-2 px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200"><Home className="w-4 h-4"/><span>Dashboard</span></button> {hasPermission('reports.view') && <button onClick={() => setCurrentPage('reports')} className="flex items-center space-x-2 px-4 py-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200"><BarChart3 className="w-4 h-4"/><span>Reports</span></button>} <button
-onClick={logout} className="flex items-center space-x-2 px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200" > <LogOut className="w-4 h-4"/> <span>Logout</span></button></div></div> <div className="border-2 border-dashed border-indigo-300 rounded-lg p-8 text-center mb-6"> <Upload className="w-12 h-12 text-indigo-400 mx-auto mb-4"/> <input ref={fileInputRef} type="file"
-accept=".pdf,image/*" multiple
-onChange={handleFileSelect} className="hidden" id="file-upload"/> <label htmlFor="file-upload" className="cursor-pointer"> <span className="text-lg font-semibold text-gray-700">Drop files or click to upload</span> <p className="text-sm text-gray-500 mt-2">PDF and images supported</p></label> {selectedFiles.length > 0 && ( <div className="mt-4"> <p className="text-sm text-indigo-600 font-medium mb-2"> {selectedFiles.length} file(s) selected:</p> <div className="max-h-32 overflow-y-auto"> {selectedFiles.map((file, idx) => (
-<p key={idx} className="text-xs text-gray-600">{file.name}</p> ))}</div></div>)}</div> {isProcessing && processingProgress.total > 0 && ( <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 mb-6"> <div className="flex items-center justify-between mb-3"> <div className="flex items-center space-x-3"> <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600"></div> <span className="text-gray-700"> Processing invoices... ({processingProgress.current} of {processingProgress.total})</span></div>
+onClick={logout} className="flex items-center space-x-2 px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200" > <LogOut className="w-4 h-4"/> <span>Logout</span></button></div></div> <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+<div className="border-2 border-dashed border-indigo-300 rounded-lg p-6 text-center hover:border-indigo-500 hover:bg-indigo-50 transition">
+<Sparkles className="w-10 h-10 text-indigo-400 mx-auto mb-3"/>
+<input ref={fileInputRef} type="file" accept=".pdf,image/*" multiple onChange={handleFileSelect} className="hidden" id="file-upload"/>
+<label htmlFor="file-upload" className="cursor-pointer">
+<span className="text-lg font-semibold text-gray-700">AI Upload</span>
+<p className="text-sm text-gray-500 mt-1">Upload PDF or images — AI extracts invoice data automatically</p>
+</label>
+{selectedFiles.length > 0 && (<div className="mt-3"><p className="text-sm text-indigo-600 font-medium mb-1">{selectedFiles.length} file(s) selected:</p><div className="max-h-24 overflow-y-auto">{selectedFiles.map((file, idx) => (<p key={idx} className="text-xs text-gray-600">{file.name}</p>))}</div></div>)}
+</div>
+<div className="border-2 border-dashed border-teal-300 rounded-lg p-6 text-center hover:border-teal-500 hover:bg-teal-50 transition">
+<FileSpreadsheet className="w-10 h-10 text-teal-400 mx-auto mb-3"/>
+<input ref={bulkFileRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleBulkFile} className="hidden" id="bulk-upload"/>
+<label htmlFor="bulk-upload" className="cursor-pointer">
+<span className="text-lg font-semibold text-gray-700">Bulk Import</span>
+<p className="text-sm text-gray-500 mt-1">Upload Excel or CSV to import multiple invoices at once</p>
+</label>
+{bulkImport.fileName && <p className="text-sm text-teal-600 font-medium mt-3">{bulkImport.fileName} — {bulkImport.rows.length} row(s)</p>}
+</div>
+</div> {isProcessing && processingProgress.total > 0 && ( <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 mb-6"> <div className="flex items-center justify-between mb-3"> <div className="flex items-center space-x-3"> <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600"></div> <span className="text-gray-700"> Processing invoices... ({processingProgress.current} of {processingProgress.total})</span></div>
 <span className="text-sm font-semibold text-indigo-600"> {Math.round((processingProgress.current / processingProgress.total) * 100)}%</span></div> <div className="w-full bg-gray-200 rounded-full h-2"> <div className="bg-indigo-600 h-2 rounded-full transition-all duration-300"
 style={{ width: `${(processingProgress.current / processingProgress.total) * 100}%` }} ></div></div></div>)}
+{bulkImport.step === 'map' && (<div className="bg-teal-50 border border-teal-200 rounded-lg p-6 mb-6">
+<div className={_fj+" mb-4"}><h3 className="text-xl font-semibold text-gray-800">Map Columns — {bulkImport.fileName}</h3>
+<div className="flex space-x-3">
+<button onClick={() => setBulkImport({ rows: [], fileName: '', mappings: null, step: null })} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Cancel</button>
+<button onClick={bulkImportPreview} className="px-5 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 text-sm font-semibold">Preview Import</button>
+</div></div>
+<p className="text-sm text-gray-600 mb-4">Map your spreadsheet columns to invoice fields. We auto-detected what we could.</p>
+<div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+{bulkImport.targetFields.map(f => (<div key={f}>
+<label className="block text-xs font-semibold text-gray-600 mb-1">{bulkImport.fieldLabels[f]}</label>
+<select value={bulkImport.mappings?.[f] || ''} onChange={e => setBulkMapping(f, e.target.value)} className={`w-full text-sm ${_i}`}>
+<option value="">— skip —</option>
+{bulkImport.headers.map(h => (<option key={h} value={h}>{h}</option>))}
+</select>
+</div>))}
+</div>
+<p className="text-xs text-gray-500 mt-3">{bulkImport.rows.length} row(s) found in spreadsheet</p>
+</div>)}
+{bulkImport.step === 'preview' && (() => { const previewRows = getMappedRows();
+const existingKeys = new Set(invoices.map(inv => `${inv.invoiceNumber}|||${(inv.vendor || '').toLowerCase()}`));
+const seenKeys = new Set();
+const flagged = previewRows.map(row => {
+  const key = row.invoiceNumber ? `${row.invoiceNumber}|||${(row.vendor || '').toLowerCase()}` : null;
+  const isDup = key && (existingKeys.has(key) || seenKeys.has(key));
+  if (key) seenKeys.add(key);
+  return { ...row, _duplicate: isDup };
+});
+const dupCount = flagged.filter(r => r._duplicate).length;
+const newCount = flagged.length - dupCount;
+return (<div className="bg-teal-50 border border-teal-200 rounded-lg p-6 mb-6">
+<div className={_fj+" mb-4"}><h3 className="text-xl font-semibold text-gray-800">Preview Import — {previewRows.length} invoice(s)</h3>
+<div className="flex space-x-3">
+<button onClick={() => setBulkImport(prev => ({ ...prev, step: 'map' }))} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Back</button>
+<button onClick={() => setBulkImport({ rows: [], fileName: '', mappings: null, step: null })} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Cancel</button>
+<button onClick={confirmBulkImport} disabled={isProcessing || newCount === 0} className="px-5 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 text-sm font-semibold disabled:opacity-50 flex items-center space-x-2">
+<CheckCircle className="w-4 h-4"/><span>{isProcessing ? 'Importing...' : `Import ${newCount} Invoice${newCount !== 1 ? 's' : ''}`}</span></button>
+</div></div>
+{dupCount > 0 && (<div className="flex items-center space-x-2 mb-3 p-3 bg-amber-50 border border-amber-200 rounded-lg"><AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0"/><p className="text-sm text-amber-800"><strong>{dupCount}</strong> duplicate invoice{dupCount !== 1 ? 's' : ''} found (matching invoice # + vendor) — these will be skipped.</p></div>)}
+<div className="overflow-x-auto max-h-80 overflow-y-auto"><table className="w-full text-sm">
+<thead className="bg-teal-100 sticky top-0"><tr>
+<th className="px-3 py-2 text-left text-xs font-semibold text-teal-800 w-8"></th>
+{Object.entries(bulkImport.mappings || {}).filter(([,v]) => v).map(([f]) => (
+<th key={f} className="px-3 py-2 text-left text-xs font-semibold text-teal-800">{bulkImport.fieldLabels[f]}</th>
+))}</tr></thead>
+<tbody className="divide-y divide-teal-100">{flagged.slice(0, 50).map((row, i) => (
+<tr key={i} className={row._duplicate ? 'bg-amber-50 opacity-60' : 'hover:bg-teal-50'}>
+<td className="px-3 py-1.5 text-center">{row._duplicate && <span className="text-amber-600 text-xs font-bold" title="Duplicate — will be skipped">DUP</span>}</td>
+{Object.entries(bulkImport.mappings || {}).filter(([,v]) => v).map(([f]) => (
+<td key={f} className={`px-3 py-1.5 max-w-[160px] truncate ${row._duplicate ? 'text-gray-400 line-through' : 'text-gray-700'}`}>{row[f] || '—'}</td>
+))}</tr>))}</tbody></table></div>
+{previewRows.length > 50 && <p className="text-xs text-gray-500 mt-2 text-center">Showing first 50 of {previewRows.length} rows</p>}
+</div>); })()}
+{bulkImport.step === 'success' && (<div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+<div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+<div className="text-center">
+<div className="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-teal-100 mb-4"><CheckCircle className="h-10 w-10 text-teal-600"/></div>
+<h3 className="text-xl font-bold text-gray-900 mb-2">Import Complete</h3>
+<p className="text-gray-600 mb-5">Your invoices have been successfully imported.</p>
+</div>
+<div className="bg-gray-50 rounded-lg p-4 space-y-3 mb-5">
+<div className="flex justify-between text-sm"><span className="text-gray-500">Source File</span><span className="font-medium text-gray-800">{bulkImport.summary?.fileName}</span></div>
+<div className="flex justify-between text-sm"><span className="text-gray-500">Invoices Imported</span><span className="font-bold text-teal-700">{bulkImport.summary?.count}</span></div>
+<div className="flex justify-between text-sm"><span className="text-gray-500">Total Value</span><span className="font-bold text-teal-700">€{(bulkImport.summary?.totalAmount || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
+<div className="flex justify-between text-sm"><span className="text-gray-500">Unique Vendors</span><span className="font-medium text-gray-800">{bulkImport.summary?.vendors?.length || 0}</span></div>
+{bulkImport.summary?.vendors?.length > 0 && bulkImport.summary.vendors.length <= 5 && (
+<div className="text-sm"><span className="text-gray-500">Vendors: </span><span className="text-gray-700">{bulkImport.summary.vendors.join(', ')}</span></div>
+)}
+{bulkImport.summary?.skipped?.length > 0 && (
+<div className="flex justify-between text-sm"><span className="text-amber-600">Duplicates Skipped</span><span className="font-bold text-amber-600">{bulkImport.summary.skipped.length}</span></div>
+)}
+</div>
+{bulkImport.summary?.skipped?.length > 0 && (
+<div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-5">
+<p className="text-xs font-semibold text-amber-800 mb-1">Skipped Duplicates:</p>
+<div className="max-h-24 overflow-y-auto space-y-0.5">{bulkImport.summary.skipped.map((s, i) => (
+<p key={i} className="text-xs text-amber-700">{s.invoiceNumber} — {s.vendor}</p>
+))}</div>
+</div>
+)}
+<button onClick={() => setBulkImport({ rows: [], fileName: '', mappings: null, step: null })} className="w-full px-4 py-3 bg-teal-600 text-white rounded-lg hover:bg-teal-700 font-semibold">OK</button>
+</div></div>)}
 {extractionErrors.length > 0 && !isProcessing && (<div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6"><div className="flex items-start space-x-3"><AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5"/><div><h4 className="text-sm font-semibold text-yellow-800 mb-1">Some files could not be extracted with AI</h4><ul className="text-sm text-yellow-700 space-y-1">{extractionErrors.map((err, idx) => (<li key={idx}><strong>{err.fileName}:</strong> {err.error}</li>))}</ul><p className="text-xs text-yellow-600 mt-2">These files were processed using sample data instead.</p></div></div></div>)}
-{extractedDataBatch.length > 0 && !isProcessing && ( <div className="bg-green-50 border border-green-200 rounded-lg p-6 mb-6"> <div className={_fj+" mb-4"}> <h3 className="text-xl font-semibold text-gray-800"> Extracted Invoice Data ({extractedDataBatch.length} invoices)</h3> <button
-onClick={processInvoiceBatch} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition flex items-center space-x-2" > <CheckCircle className="w-4 h-4"/> <span>Process All</span></button></div> <div className="max-h-96 overflow-y-auto mb-4 space-y-4"> {extractedDataBatch.map((data, idx) => ( <div key={idx} className="bg-white p-4 rounded-lg border border-green-300 relative"> <div className="flex items-center justify-between mb-2"> <span className="font-semibold text-gray-700">Invoice #{idx + 1}</span>
+{extractedDataBatch.length > 0 && !isProcessing && (() => {
+const existingKeys = new Set(invoices.map(inv => `${inv.invoiceNumber}|||${(inv.vendor || '').toLowerCase()}`));
+const seenKeys = new Set();
+const batchFlags = extractedDataBatch.map(data => {
+  const key = data.invoiceNumber ? `${data.invoiceNumber}|||${(data.vendor || '').toLowerCase()}` : null;
+  const isDup = key && (existingKeys.has(key) || seenKeys.has(key));
+  if (key) seenKeys.add(key);
+  return isDup;
+});
+const dupCount = batchFlags.filter(Boolean).length;
+const newCount = extractedDataBatch.length - dupCount;
+return ( <div className="bg-green-50 border border-green-200 rounded-lg p-6 mb-6"> <div className={_fj+" mb-4"}> <h3 className="text-xl font-semibold text-gray-800"> Extracted Invoice Data ({extractedDataBatch.length} invoices)</h3> <button
+onClick={processInvoiceBatch} disabled={newCount === 0} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition flex items-center space-x-2 disabled:opacity-50" > <CheckCircle className="w-4 h-4"/> <span>{newCount === 0 ? 'All Duplicates' : `Process ${newCount} Invoice${newCount !== 1 ? 's' : ''}`}</span></button></div>
+{dupCount > 0 && (<div className="flex items-center space-x-2 mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg"><AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0"/><p className="text-sm text-amber-800"><strong>{dupCount}</strong> duplicate{dupCount !== 1 ? 's' : ''} detected (matching invoice # + vendor already in system) — will be skipped on import.</p></div>)}
+<div className="max-h-96 overflow-y-auto mb-4 space-y-4"> {extractedDataBatch.map((data, idx) => ( <div key={idx} className={`bg-white p-4 rounded-lg border relative ${batchFlags[idx] ? 'border-amber-300 opacity-60' : 'border-green-300'}`}> <div className="flex items-center justify-between mb-2"> <div className="flex items-center space-x-2"><span className="font-semibold text-gray-700">Invoice #{idx + 1}</span>{batchFlags[idx] && <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs font-bold rounded">DUPLICATE</span>}</div>
 <div className="flex items-center space-x-2"><span className="text-xs text-gray-500">{data.fileName}</span><button onClick={() => removeFromBatch(idx)} className="text-red-400 hover:text-red-600 hover:bg-red-50 rounded-full p-1 transition" title="Remove from batch"><X className="w-4 h-4"/></button></div></div> <div className="grid grid-cols-2 md:grid-cols-4 gap-3"> <div> <span className="text-xs text-gray-600">Invoice #:</span> <p className="text-sm font-semibold">{data.invoiceNumber}</p></div> <div> <span className="text-xs text-gray-600">Vendor:</span> <p className="text-sm font-semibold">{data.vendor}</p></div> <div> <span className="text-xs text-gray-600">Date:</span> <p className="text-sm font-semibold">{data.date}</p></div> <div> <span className="text-xs text-gray-600">Total:</span>
 <p className="text-sm font-semibold text-green-600">{currencySymbol(data.currency)}{data.totalAmount || (parseFloat(data.amount) + parseFloat(data.taxAmount)).toFixed(2)}</p></div></div></div> ))}</div> <button
-onClick={processInvoiceBatch} className="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700"  > Process All Invoices</button></div>)}</div> <div className={_cd}> <div className={_fj+" mb-6"}> <h2 className="text-2xl font-bold text-gray-800">Invoice List</h2> <div className="flex items-center space-x-3"><div className="relative"> <input type="text"
+onClick={processInvoiceBatch} disabled={newCount === 0} className="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 disabled:opacity-50">{newCount === 0 ? 'All invoices are duplicates' : `Process ${newCount} Invoice${newCount !== 1 ? 's' : ''}`}</button></div>);})()}</div> <div className={_cd}> <div className={_fj+" mb-6"}> <h2 className="text-2xl font-bold text-gray-800">Invoice List</h2> <div className="flex items-center space-x-3"><div className="relative"> <input type="text"
 placeholder="Search invoices..."
 value={filters.searchTerm}
 onChange={(e) => updateFilter('searchTerm', e.target.value)} className="px-4 py-2 pl-10 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 w-64"/> <AlertCircle className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2"/></div> <div className="relative"> <button
@@ -1415,12 +2223,14 @@ onChange={(e) => updateFilter('amountMax', e.target.value)}
 placeholder="Max" className={_i}/></div></div> <div> <label className={_lb}>Submitted By</label> <select
 value={filters.submittedBy}
 onChange={(e) => updateFilter('submittedBy', e.target.value)} className={`w-full ${_i}`} > <option value="all">All Submitters</option> {getUniqueSubmitters().map(submitter => ( <option key={submitter} value={submitter}>{submitter}</option> ))}</select></div></div> <div className="mt-4 pt-4 border-t border-gray-200"> <p className="text-sm text-gray-600"> Showing {getFilteredInvoices().length} of {invoices.length} invoices</p></div></div>)}</div> <div className="relative"> <label className="text-sm text-gray-600 mr-2">Group By:</label> <select value={groupBy}
-onChange={(e) => setGroupBy(e.target.value)} className={_i} > <option value="none">None</option> <option value="vendor">Vendor</option> <option value="date">Date</option> <option value="submittedBy">Submitted By</option></select></div> <div className="relative"> <button
+onChange={(e) => setGroupBy(e.target.value)} className={_i} > <option value="none">None</option> <option value="vendor">Vendor</option> <option value="businessUnit">Business Unit</option> <option value="date">Date</option> <option value="submittedBy">Submitted By</option></select></div> <div className="relative"> <button
 onClick={() => setShowColumnSelector(!showColumnSelector)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"  > Columns</button> {showColumnSelector && ( <div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-xl border border-gray-200 p-4 z-10"> <h3 className="font-semibold text-gray-800 mb-3">Show/Hide Columns</h3> <div className="space-y-2"> <label className="flex items-center space-x-2 cursor-pointer"> <input type="checkbox"
 checked={visibleColumns.invoiceNumber}
 onChange={() => toggleColumnVisibility('invoiceNumber')} className="w-4 h-4 text-indigo-600 rounded"/> <span className="text-sm text-gray-700">Invoice #</span></label> <label className="flex items-center space-x-2 cursor-pointer"> <input type="checkbox"
 checked={visibleColumns.vendor}
 onChange={() => toggleColumnVisibility('vendor')} className="w-4 h-4 text-indigo-600 rounded"/> <span className="text-sm text-gray-700">Vendor</span></label> <label className="flex items-center space-x-2 cursor-pointer"> <input type="checkbox"
+checked={visibleColumns.businessUnit}
+onChange={() => toggleColumnVisibility('businessUnit')} className="w-4 h-4 text-indigo-600 rounded"/> <span className="text-sm text-gray-700">Business Unit</span></label> <label className="flex items-center space-x-2 cursor-pointer"> <input type="checkbox"
 checked={visibleColumns.subtotal}
 onChange={() => toggleColumnVisibility('subtotal')} className="w-4 h-4 text-indigo-600 rounded"/> <span className="text-sm text-gray-700">Subtotal</span></label> <label className="flex items-center space-x-2 cursor-pointer"> <input type="checkbox"
 checked={visibleColumns.tax}
@@ -1443,6 +2253,7 @@ onClick={clearFilters} className="mt-4 text-indigo-600 hover:text-indigo-800 und
 <div className="overflow-x-auto"> <table className="w-full"> <thead className="bg-gray-50"> <tr>
 {visibleColumns.invoiceNumber && ( <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Invoice #</th>)}
 {visibleColumns.vendor && ( <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Vendor</th>)}
+{visibleColumns.businessUnit && ( <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Business Unit</th>)}
 {visibleColumns.subtotal && ( <th className="px-4 py-3 text-right text-sm font-semibold text-gray-700">Subtotal</th>)}
 {visibleColumns.tax && ( <th className="px-4 py-3 text-right text-sm font-semibold text-gray-700">Tax</th>)}
 {visibleColumns.total && ( <th className="px-4 py-3 text-right text-sm font-semibold text-gray-700">Total</th>)}
@@ -1455,6 +2266,7 @@ onClick={clearFilters} className="mt-4 text-indigo-600 hover:text-indigo-800 und
 {visibleColumns.invoiceNumber && ( <td className="px-4 py-3 text-sm"> <button
 onClick={() => setSelectedInvoice(invoice)} className="text-indigo-600 hover:text-indigo-800 font-semibold underline" > {invoice.invoiceNumber}</button></td>)}
 {visibleColumns.vendor && ( <td className="px-4 py-3 text-sm">{invoice.vendor}</td>)}
+{visibleColumns.businessUnit && ( <td className="px-4 py-3 text-sm">{invoice.businessUnit || '—'}</td>)}
 {visibleColumns.subtotal && ( <td className="px-4 py-3 text-sm text-right">{currencySymbol(invoice.currency)}{invoice.amount}</td>)}
 {visibleColumns.tax && ( <td className="px-4 py-3 text-sm text-right">{currencySymbol(invoice.currency)}{invoice.taxAmount}</td>)}
 {visibleColumns.total && ( <td className="px-4 py-3 text-sm text-right font-semibold">{currencySymbol(invoice.currency)}{invoice.totalAmount || (parseFloat(invoice.amount) + parseFloat(invoice.taxAmount)).toFixed(2)}</td>)}
