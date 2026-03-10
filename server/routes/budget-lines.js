@@ -114,49 +114,50 @@ router.delete('/api/budget-lines/:id', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /api/budget-report  — Budget vs Spend Approval vs Actuals
+// GET /api/budget-report  — Budget compliance: Budget vs SA Approved vs Actuals
 router.get('/api/budget-report', async (req, res, next) => {
   try {
     const budgetIdFilter = req.query.budgetId ? parseInt(req.query.budgetId) : null;
-    const budgetLineWhere = budgetIdFilter ? { budgetId: budgetIdFilter } : {};
 
-    // 1. Get all budget lines (including unlinked ones)
-    const allBudgetLines = await prisma.budgetLineItem.findMany({
-      where: budgetLineWhere,
+    // 0. Load currency exchange rates for EUR conversion
+    const currencies = await prisma.currency.findMany();
+    const rateMap = {};
+    currencies.forEach(c => { rateMap[c.code] = parseFloat(c.exchangeRateToEur) || 1; });
+    const toEur = (amount, currency) => {
+      if (!currency || currency === 'EUR') return amount;
+      const rate = rateMap[currency];
+      return rate ? amount * rate : amount;
+    };
+
+    const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+    // 1. Get all budgets with their line items and linked spend approvals + invoices
+    const budgetWhere = budgetIdFilter ? { id: budgetIdFilter } : {};
+    const allBudgets = await prisma.budget.findMany({
+      where: budgetWhere,
       include: {
-        spendApproval: {
-          select: { id: true, ref: true, title: true, vendor: true, department: true, category: true, region: true, currency: true, status: true, amount: true },
+        function: { select: { name: true } },
+        lineItems: {
+          include: {
+            spendApproval: {
+              select: {
+                id: true, ref: true, currency: true, amount: true, status: true,
+                invoices: { select: { id: true, amount: true, taxAmount: true, date: true, currency: true, monthlyCosts: true } },
+              },
+            },
+          },
         },
       },
+      orderBy: { id: 'asc' },
     });
 
-    // 2. Get invoices for linked spend approvals
-    const linkedSpendIds = [...new Set(allBudgetLines.filter(bl => bl.spendApprovalId).map(bl => bl.spendApprovalId))];
-    const invoicesBySpend = {};
-    if (linkedSpendIds.length > 0) {
-      const invoices = await prisma.invoice.findMany({
-        where: { spendApprovalId: { in: linkedSpendIds } },
-        select: { id: true, amount: true, taxAmount: true, date: true, spendApprovalId: true },
-      });
-      invoices.forEach(inv => {
-        if (!invoicesBySpend[inv.spendApprovalId]) invoicesBySpend[inv.spendApprovalId] = [];
-        invoicesBySpend[inv.spendApprovalId].push(inv);
-      });
-    }
+    // 2. Build one row per budget
+    const rows = allBudgets.map(budget => {
+      const budgetEur = budget.lineItems.reduce((sum, bl) => sum + (parseFloat(bl.eurAnnual) || 0), 0);
 
-    // 3. Group budget lines by spend approval (null key = unlinked)
-    const grouped = {};
-    allBudgetLines.forEach(bl => {
-      const key = bl.spendApprovalId || 'unlinked';
-      if (!grouped[key]) grouped[key] = { lines: [], spend: bl.spendApproval };
-      grouped[key].lines.push(bl);
-    });
-
-    // 4. Build report rows
-    const rows = Object.entries(grouped).map(([key, { lines, spend }]) => {
-      const budgetEur = lines.reduce((sum, bl) => sum + (parseFloat(bl.eurAnnual) || 0), 0);
+      // Monthly budgets from line items
       const monthlyBudgets = {};
-      lines.forEach(bl => {
+      budget.lineItems.forEach(bl => {
         if (bl.monthlyBudget && typeof bl.monthlyBudget === 'object') {
           for (const [month, val] of Object.entries(bl.monthlyBudget)) {
             monthlyBudgets[month] = (monthlyBudgets[month] || 0) + (parseFloat(val) || 0);
@@ -164,51 +165,50 @@ router.get('/api/budget-report', async (req, res, next) => {
         }
       });
 
-      const invoices = key !== 'unlinked' ? (invoicesBySpend[parseInt(key)] || []) : [];
-      const approvedEur = spend ? parseFloat(spend.amount) || 0 : 0;
-      const invoicedEur = invoices.reduce((sum, inv) => sum + parseFloat(inv.amount) + parseFloat(inv.taxAmount), 0);
-
+      // Collect unique linked spend approvals (avoid double-counting)
+      const seenSpendIds = new Set();
+      let approvedEur = 0;
+      let invoicedEur = 0;
       const monthlyActuals = {};
-      invoices.forEach(inv => {
-        const m = (inv.date || '').slice(0, 7);
-        if (m) monthlyActuals[m] = (monthlyActuals[m] || 0) + parseFloat(inv.amount) + parseFloat(inv.taxAmount);
+
+      budget.lineItems.forEach(bl => {
+        if (!bl.spendApproval || seenSpendIds.has(bl.spendApproval.id)) return;
+        seenSpendIds.add(bl.spendApproval.id);
+
+        const sp = bl.spendApproval;
+        approvedEur += toEur(parseFloat(sp.amount) || 0, sp.currency);
+
+        (sp.invoices || []).forEach(inv => {
+          const total = toEur(parseFloat(inv.amount) + parseFloat(inv.taxAmount), inv.currency);
+          invoicedEur += total;
+
+          if (inv.monthlyCosts && inv.monthlyCosts.length > 0) {
+            inv.monthlyCosts.forEach(mc => {
+              monthlyActuals[mc.month] = (monthlyActuals[mc.month] || 0) + toEur(parseFloat(mc.amount), inv.currency);
+            });
+          } else {
+            const dateStr = inv.date || '';
+            const monthIdx = dateStr ? parseInt(dateStr.slice(5, 7), 10) - 1 : -1;
+            const mName = monthIdx >= 0 ? MONTH_NAMES[monthIdx] : null;
+            if (mName) monthlyActuals[mName] = (monthlyActuals[mName] || 0) + total;
+          }
+        });
       });
 
-      if (spend) {
-        return {
-          spendId: spend.id,
-          ref: spend.ref,
-          title: spend.title,
-          vendor: spend.vendor,
-          department: spend.department,
-          category: spend.category,
-          region: spend.region,
-          currency: spend.currency,
-          status: spend.status,
-          budgetEur, approvedEur, invoicedEur,
-          variance: budgetEur - invoicedEur,
-          budgetLineCount: lines.length,
-          invoiceCount: invoices.length,
-          monthlyBudgets, monthlyActuals,
-        };
-      }
-
-      // Unlinked budget lines — group as a single row
       return {
-        spendId: null,
-        ref: 'Unlinked',
-        title: `${lines.length} unlinked budget line${lines.length !== 1 ? 's' : ''}`,
-        vendor: '',
-        department: '',
-        category: '',
-        region: '',
-        currency: 'EUR',
-        status: 'N/A',
-        budgetEur, approvedEur: 0, invoicedEur: 0,
-        variance: budgetEur,
-        budgetLineCount: lines.length,
-        invoiceCount: 0,
-        monthlyBudgets, monthlyActuals: {},
+        budgetId: budget.id,
+        title: budget.title,
+        year: budget.year,
+        functionName: budget.function?.name || '',
+        status: budget.status,
+        budgetEur,
+        approvedEur,
+        invoicedEur,
+        variance: budgetEur - invoicedEur,
+        budgetLineCount: budget.lineItems.length,
+        linkedSpendCount: seenSpendIds.size,
+        monthlyBudgets,
+        monthlyActuals,
       };
     });
 

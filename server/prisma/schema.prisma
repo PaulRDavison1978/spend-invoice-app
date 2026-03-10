@@ -81,6 +81,7 @@ model Invoice {
 
   spendApproval   SpendApproval? @relation(fields: [spendApprovalId], references: [id], onDelete: SetNull)
   lineItems       InvoiceLineItem[]
+  monthlyCosts    InvoiceMonthlyCost[]
 
   @@map("invoices")
 }
@@ -99,6 +100,19 @@ model InvoiceLineItem {
   @@map("invoice_line_items")
 }
 
+model InvoiceMonthlyCost {
+  id        Int     @id @default(autoincrement())
+  invoiceId Int     @map("invoice_id")
+  month     String  // e.g. "Jan", "Feb" — matches budget line keys
+  yearMonth String  @map("year_month") // e.g. "2026-01" for filtering
+  amount    Decimal @default(0) @db.Decimal(12, 2)
+
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@unique([invoiceId, yearMonth])
+  @@map("invoice_monthly_costs")
+}
+
 model SpendApproval {
   id            Int       @id @default(autoincrement())
   ref           String    @unique
@@ -108,14 +122,17 @@ model SpendApproval {
   amount        Decimal   @db.Decimal(12, 2)
   category      String
   vendor        String
+  businessUnit  String?   @map("business_unit")
   costCentre    String?   @map("cost_centre")
   atom          String?
   region        String?
   project       String?
+  description   String?
   approverId    Int?      @map("approver_id")
   status        String    @default("Pending")
   submittedBy   String    @map("submitted_by")
   submittedAt   DateTime  @default(now()) @map("submitted_at")
+  inBudget      Boolean   @default(false) @map("in_budget")
   exceptional   String    @default("No")
   timeSensitive Boolean   @default(false) @map("time_sensitive")
   justification String?
@@ -125,8 +142,23 @@ model SpendApproval {
   invoices      Invoice[]
   alerts        SpendAlert[]
   budgetLines   BudgetLineItem[]
+  attachments   SpendAttachment[]
 
   @@map("spend_approvals")
+}
+
+model SpendAttachment {
+  id              Int       @id @default(autoincrement())
+  spendApprovalId Int       @map("spend_approval_id")
+  fileName        String    @map("file_name")
+  fileType        String?   @map("file_type")
+  fileUrl         String    @map("file_url")
+  uploadedBy      String    @map("uploaded_by")
+  uploadedAt      DateTime  @default(now()) @map("uploaded_at")
+
+  spendApproval   SpendApproval @relation(fields: [spendApprovalId], references: [id], onDelete: Cascade)
+
+  @@map("spend_attachments")
 }
 
 model SpendAlert {

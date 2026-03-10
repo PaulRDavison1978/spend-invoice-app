@@ -12,6 +12,7 @@ router.get('/api/invoices', async (req, res, next) => {
     const invoices = await prisma.invoice.findMany({
       include: {
         lineItems: true,
+        monthlyCosts: { orderBy: { yearMonth: 'asc' } },
         spendApproval: { select: { id: true, ref: true, title: true } },
       },
       orderBy: { id: 'asc' },
@@ -84,6 +85,7 @@ router.get('/api/invoices/:id', async (req, res, next) => {
       where: { id: parseInt(req.params.id) },
       include: {
         lineItems: true,
+        monthlyCosts: { orderBy: { yearMonth: 'asc' } },
         spendApproval: { select: { id: true, ref: true, title: true } },
       },
     });
@@ -157,6 +159,50 @@ router.patch('/api/invoices/:id/unlink', async (req, res, next) => {
     }
 
     res.json({ ...updated, thresholdAlert });
+  } catch (err) { next(err); }
+});
+
+// GET /api/invoices/:id/monthly-costs
+router.get('/api/invoices/:id/monthly-costs', async (req, res, next) => {
+  try {
+    const invoiceId = parseInt(req.params.id);
+    const rows = await prisma.invoiceMonthlyCost.findMany({
+      where: { invoiceId },
+      orderBy: { yearMonth: 'asc' },
+    });
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+
+// PUT /api/invoices/:id/monthly-costs — replace all monthly cost rows for an invoice
+router.put('/api/invoices/:id/monthly-costs', async (req, res, next) => {
+  try {
+    const invoiceId = parseInt(req.params.id);
+    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+    if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+
+    const { months } = req.body; // [{ month: "Jan", yearMonth: "2026-01", amount: 500 }, ...]
+    if (!Array.isArray(months)) return res.status(400).json({ error: 'months array is required' });
+
+    // Delete existing and recreate in a transaction
+    const rows = await prisma.$transaction(async (tx) => {
+      await tx.invoiceMonthlyCost.deleteMany({ where: { invoiceId } });
+      if (months.length === 0) return [];
+      const created = [];
+      for (const m of months) {
+        const row = await tx.invoiceMonthlyCost.create({
+          data: { invoiceId, month: m.month, yearMonth: m.yearMonth, amount: parseFloat(m.amount) || 0 },
+        });
+        created.push(row);
+      }
+      return created;
+    });
+
+    const performedBy = req.user?.name || 'System';
+    const allocDesc = rows.length === 0 ? 'cleared (invoice date)' : rows.length === 1 ? `booked to ${rows[0].month}` : `spread across ${rows.length} months`;
+    await logAudit({ action: 'INVOICE_COST_ALLOCATION', details: `Invoice ${invoice.invoiceNumber} cost allocation ${allocDesc}`, performedBy, userId: req.user?.id });
+
+    res.json(rows);
   } catch (err) { next(err); }
 });
 

@@ -13,6 +13,7 @@ router.get('/api/spend-approvals', async (req, res, next) => {
         approver: { select: { id: true, name: true } },
         invoices: { select: { id: true, invoiceNumber: true, amount: true } },
         budgetLines: { select: { id: true, licence: true, eurAnnual: true, vendor: true } },
+        attachments: { select: { id: true, fileName: true, fileType: true, fileUrl: true, uploadedBy: true, uploadedAt: true }, orderBy: { uploadedAt: 'desc' } },
       },
       orderBy: { id: 'asc' },
     });
@@ -25,8 +26,8 @@ router.post('/api/spend-approvals', async (req, res, next) => {
   try {
     const {
       ref, department, title, currency, amount, category, vendor,
-      costCentre, atom, region, project, approverId,
-      submittedBy, exceptional, timeSensitive, justification, ccRecipients,
+      businessUnit, costCentre, atom, region, project, description, approverId,
+      submittedBy, inBudget, exceptional, timeSensitive, justification, ccRecipients,
     } = req.body;
 
     // Escalation logic: if approver has a limit and amount exceeds it and approver is not CEO
@@ -47,13 +48,16 @@ router.post('/api/spend-approvals', async (req, res, next) => {
         amount: parseFloat(amount) || 0,
         category,
         vendor,
+        businessUnit: businessUnit || null,
         costCentre,
         atom,
         region,
         project,
+        description: description || null,
         approverId,
         status,
         submittedBy: submittedBy || req.user?.name || 'Unknown',
+        inBudget: inBudget === true || inBudget === 'true' || inBudget === 'Yes',
         exceptional: exceptional || 'No',
         timeSensitive: timeSensitive || false,
         justification,
@@ -96,6 +100,7 @@ router.get('/api/spend-approvals/:id', async (req, res, next) => {
         approver: { select: { id: true, name: true } },
         invoices: { select: { id: true, invoiceNumber: true, amount: true, vendor: true } },
         budgetLines: { select: { id: true, licence: true, eurAnnual: true, vendor: true, currency: true, type: true } },
+        attachments: { select: { id: true, fileName: true, fileType: true, fileUrl: true, uploadedBy: true, uploadedAt: true }, orderBy: { uploadedAt: 'desc' } },
       },
     });
     if (!spend) return res.status(404).json({ error: 'Spend approval not found' });
@@ -309,6 +314,126 @@ router.post('/api/spend-approvals/bulk-reject', async (req, res, next) => {
     }
 
     res.json({ success: true, count: ids.length });
+  } catch (err) { next(err); }
+});
+
+// POST /api/spend-approvals/:id/attachments
+router.post('/api/spend-approvals/:id/attachments', async (req, res, next) => {
+  try {
+    const spendId = parseInt(req.params.id);
+    const spend = await prisma.spendApproval.findUnique({ where: { id: spendId } });
+    if (!spend) return res.status(404).json({ error: 'Spend approval not found' });
+
+    const { fileName, fileType, fileUrl } = req.body;
+    if (!fileName || !fileUrl) return res.status(400).json({ error: 'fileName and fileUrl are required' });
+
+    const attachment = await prisma.spendAttachment.create({
+      data: {
+        spendApprovalId: spendId,
+        fileName,
+        fileType: fileType || null,
+        fileUrl,
+        uploadedBy: req.user?.name || 'Unknown',
+      },
+    });
+
+    await logAudit({ action: 'SPEND_ATTACHMENT_ADDED', details: `Attachment "${fileName}" added to spend "${spend.title}" (${spend.ref})`, performedBy: req.user?.name || 'System', userId: req.user?.id });
+    res.status(201).json(attachment);
+  } catch (err) { next(err); }
+});
+
+// POST /api/spend-approvals/bulk-import — bulk create spend approvals from spreadsheet
+router.post('/api/spend-approvals/bulk-import', async (req, res, next) => {
+  try {
+    const items = req.body;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Request body must be a non-empty array' });
+    }
+
+    // Check for duplicates by ref
+    const incomingRefs = items.map(i => i.ref).filter(Boolean);
+    const existing = incomingRefs.length > 0
+      ? await prisma.spendApproval.findMany({ where: { ref: { in: incomingRefs } }, select: { ref: true } })
+      : [];
+    const existingSet = new Set(existing.map(e => e.ref));
+
+    const created = [];
+    const skipped = [];
+    for (const item of items) {
+      if (item.ref && existingSet.has(item.ref)) {
+        skipped.push({ ref: item.ref, title: item.title, reason: 'Duplicate' });
+        continue;
+      }
+      if (item.ref) existingSet.add(item.ref);
+
+      const spend = await prisma.spendApproval.create({
+        data: {
+          ref: item.ref || `SA-IMP-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          department: item.department || '',
+          title: item.title || 'Imported Spend',
+          currency: item.currency || 'EUR',
+          amount: parseFloat(item.amount) || 0,
+          category: item.category || 'Other',
+          vendor: item.vendor || 'Unknown',
+          businessUnit: item.businessUnit || null,
+          costCentre: item.costCentre || null,
+          atom: item.atom || null,
+          region: item.region || null,
+          project: item.project || null,
+          description: item.description || null,
+          status: item.status || 'Pending',
+          submittedBy: item.submittedBy || req.user?.name || 'Bulk Import',
+          inBudget: item.inBudget === true || item.inBudget === 'true' || item.inBudget === 'Yes',
+          exceptional: item.exceptional || 'No',
+          timeSensitive: item.timeSensitive === true || item.timeSensitive === 'true' || item.timeSensitive === 'Yes',
+          justification: item.justification || null,
+        },
+        include: { approver: { select: { id: true, name: true } } },
+      });
+      created.push(spend);
+    }
+
+    const performedBy = req.user?.name || 'System';
+    await logAudit({ action: 'SPEND_BULK_IMPORTED', details: `${created.length} spend approval(s) bulk imported, ${skipped.length} duplicate(s) skipped`, performedBy, userId: req.user?.id });
+
+    res.status(201).json({ created, skipped });
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/spend-approvals/:id
+router.delete('/api/spend-approvals/:id', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    const spend = await prisma.spendApproval.findUnique({ where: { id } });
+    if (!spend) return res.status(404).json({ error: 'Spend approval not found' });
+
+    // Unlink any invoices first (SetNull would handle this via schema, but be explicit)
+    await prisma.invoice.updateMany({ where: { spendApprovalId: id }, data: { spendApprovalId: null } });
+    // Unlink budget lines
+    await prisma.budgetLineItem.updateMany({ where: { spendApprovalId: id }, data: { spendApprovalId: null } });
+
+    await prisma.spendApproval.delete({ where: { id } });
+
+    const performedBy = req.user?.name || 'System';
+    await logAudit({ action: 'SPEND_DELETED', details: `Spend approval "${spend.title}" (${spend.ref}) deleted`, performedBy, userId: req.user?.id });
+
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/spend-approvals/:id/attachments/:attachmentId
+router.delete('/api/spend-approvals/:id/attachments/:attachmentId', async (req, res, next) => {
+  try {
+    const spendId = parseInt(req.params.id);
+    const attachmentId = parseInt(req.params.attachmentId);
+    const attachment = await prisma.spendAttachment.findFirst({ where: { id: attachmentId, spendApprovalId: spendId } });
+    if (!attachment) return res.status(404).json({ error: 'Attachment not found' });
+
+    await prisma.spendAttachment.delete({ where: { id: attachmentId } });
+
+    const spend = await prisma.spendApproval.findUnique({ where: { id: spendId } });
+    await logAudit({ action: 'SPEND_ATTACHMENT_REMOVED', details: `Attachment "${attachment.fileName}" removed from spend "${spend?.title}" (${spend?.ref})`, performedBy: req.user?.name || 'System', userId: req.user?.id });
+    res.json({ success: true });
   } catch (err) { next(err); }
 });
 
