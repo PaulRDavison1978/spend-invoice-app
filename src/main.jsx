@@ -9,6 +9,9 @@ import './index.css'
 const msalInstance = new PublicClientApplication(msalConfig)
 
 msalInstance.initialize().then(() => {
+  // Handle redirect response before rendering (required for loginRedirect flow)
+  return msalInstance.handleRedirectPromise()
+}).then(() => {
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
       <MsalProvider instance={msalInstance}>

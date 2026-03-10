@@ -108,8 +108,8 @@ const acquireToken = useCallback(async () => {
     return response.accessToken;
   } catch (err) {
     if (err instanceof InteractionRequiredAuthError) {
-      const response = await msalInstance.acquireTokenPopup(loginRequest);
-      return response.accessToken;
+      await msalInstance.acquireTokenRedirect(loginRequest);
+      return null; // Page will redirect; token acquired on return
     }
     throw err;
   }
@@ -193,36 +193,12 @@ const devLogin = async () => {
   }
 };
 
-// MSAL login handler
+// MSAL login handler — uses redirect flow to avoid COOP header issues
 const msalLogin = async () => {
   try {
     setIsAuthenticating(true);
-    const loginResponse = await msalInstance.loginPopup(loginRequest);
-    const account = loginResponse.account;
-    const idTokenClaims = account.idTokenClaims || {};
-
-    // Call backend to activate/link user
-    const token = loginResponse.accessToken;
-    const API_BASE = import.meta.env.VITE_API_URL || '';
-    const resp = await fetch(`${API_BASE}/api/auth/callback`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({
-        email: account.username,
-        oid: idTokenClaims.oid,
-        tid: idTokenClaims.tid,
-        name: account.name,
-      }),
-    });
-    const userData = await resp.json();
-    if (!resp.ok) {
-      alert(userData.error || 'Login failed');
-      setIsAuthenticating(false);
-      return;
-    }
-    setUser({ name: userData.name, email: userData.email, id: userData.id, role: userData.role, approvalLimit: userData.approvalLimit || 0, isCeo: userData.isCeo || false });
-    setUserPermissions(userData.permissions || []);
-    setIsAuthenticating(false);
+    await msalInstance.loginRedirect(loginRequest);
+    // Page will redirect away; session restore useEffect handles the return
   } catch (err) {
     console.error('MSAL login error:', err);
     setIsAuthenticating(false);
