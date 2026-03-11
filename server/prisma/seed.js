@@ -29,6 +29,7 @@ async function main() {
     { key: 'spend.view_all',          description: 'See spend approvals from any user' },
     { key: 'spend.view_own',          description: 'See only spend approvals you submitted' },
     { key: 'spend.view_dept',         description: 'See spend approvals in departments you manage' },
+    { key: 'spend.edit',              description: 'Edit spend approval details after submission' },
     { key: 'reports.view',             description: 'Access the reports dashboard and view charts' },
     { key: 'reports.export',           description: 'Export report data to CSV' },
     { key: 'settings.manage_users',   description: 'Invite, remove, and change user roles' },
@@ -53,7 +54,7 @@ async function main() {
     {
       name: 'Admin',
       isDefault: true,
-      permissions: ['invoices.view_all','invoices.upload','invoices.delete','invoices.approve','invoices.assign_all','spend.create','spend.approve','spend.view_all','reports.view','reports.export','settings.manage_users','settings.view_lookups','settings.manage_lookups','budget.manage_all'],
+      permissions: ['invoices.view_all','invoices.upload','invoices.delete','invoices.approve','invoices.assign_all','spend.create','spend.approve','spend.edit','spend.view_all','reports.view','reports.export','settings.manage_users','settings.view_lookups','settings.manage_lookups','budget.manage_all'],
     },
     {
       name: 'Finance',
@@ -266,6 +267,9 @@ async function main() {
   }
 
   // --- Budgets ---
+  await prisma.budgetLineItem.deleteMany();
+  await prisma.budget.deleteMany();
+
   const createdFunctions = {};
   const allFunctions = await prisma.function.findMany();
   for (const f of allFunctions) { createdFunctions[f.name] = f; }

@@ -28,6 +28,7 @@ const PERMISSIONS = {
       'spend.view_all': { label: 'View all spend approvals',        description: 'See spend approvals from any user' },
       'spend.view_own': { label: 'View own spend approvals',        description: 'See only spend approvals you submitted' },
       'spend.view_dept':{ label: 'View department spend approvals', description: 'See spend approvals in departments you manage' },
+      'spend.edit':     { label: 'Edit spend approvals',             description: 'Edit spend approval details after submission' },
     }
   },
   reports: {
@@ -55,7 +56,7 @@ const PERMISSIONS = {
 };
 
 const defaultRoles = [
-  { id:'admin',    name:'Admin',    isDefault:true, permissions:['invoices.view_all','invoices.upload','invoices.delete','invoices.approve','invoices.assign_all','spend.create','spend.approve','spend.view_all','reports.view','reports.export','settings.manage_users','settings.view_lookups','settings.manage_lookups','budget.manage_all'] },
+  { id:'admin',    name:'Admin',    isDefault:true, permissions:['invoices.view_all','invoices.upload','invoices.delete','invoices.approve','invoices.assign_all','spend.create','spend.approve','spend.edit','spend.view_all','reports.view','reports.export','settings.manage_users','settings.view_lookups','settings.manage_lookups','budget.manage_all'] },
   { id:'finance',  name:'Finance',  isDefault:true, permissions:['invoices.view_all','invoices.upload','invoices.delete','invoices.approve','invoices.assign_all','spend.create','spend.approve','spend.view_all','reports.view','reports.export','settings.view_lookups','budget.manage_all'] },
   { id:'approver', name:'Approver', isDefault:true, permissions:['invoices.view_own','invoices.approve','invoices.assign_own','spend.create','spend.approve','spend.view_dept','reports.view','budget.manage_own'] },
   { id:'user',     name:'User',     isDefault:true, permissions:['invoices.view_own','invoices.assign_own','spend.create','spend.view_own'] },
@@ -209,7 +210,7 @@ const msalLogin = async () => {
 const loadData = useCallback(async () => {
   if (!user) return;
   try {
-    const [invoicesData, spendsData, usersData, rolesData, lookupsData, templatesData, auditData, budgetLinesData, budgetReportData, budgetsData] = await Promise.all([
+    const [invoicesData, spendsData, usersData, rolesData, lookupsData, templatesData, auditData] = await Promise.all([
       api.get('/api/invoices'),
       api.get('/api/spend-approvals'),
       api.get('/api/users'),
@@ -226,9 +227,6 @@ const loadData = useCallback(async () => {
       ]),
       api.get('/api/email-templates').catch(() => []),
       api.get('/api/audit-logs?limit=500').catch(() => ({ logs: [] })),
-      api.get('/api/budget-lines').catch(() => []),
-      api.get('/api/budget-report').catch(() => []),
-      api.get('/api/budgets').catch(() => []),
     ]);
 
     // Transform invoice data for frontend compatibility
@@ -274,9 +272,6 @@ const loadData = useCallback(async () => {
     setBusinessUnits(businessUnitsData || []);
     setEmailTemplates(templatesData);
     if (auditData?.logs) setAuditLog(prev => { const locals = prev.filter(e => e._local); return [...auditData.logs, ...locals]; });
-    setBudgetLines(budgetLinesData || []);
-    setBudgetReport(budgetReportData || []);
-    setBudgets(budgetsData || []);
 
     setDataLoaded(true);
   } catch (err) {
@@ -313,6 +308,11 @@ const [deleteConfirmationInput, setDeleteConfirmationInput] = useState('');
 const [invoiceToDelete, setInvoiceToDelete] = useState(null);
 const [showSettingsPage, setShowSettingsPage] = useState(false);
 const [currentPage, setCurrentPage] = useState('landing');
+const [budgetsLoaded, setBudgetsLoaded] = useState(false);
+const loadBudgetData = useCallback(async () => { try { const [bl, br, b] = await Promise.all([ api.get('/api/budget-lines').catch(() => []), api.get('/api/budget-report').catch(() => []), api.get('/api/budgets').catch(() => []), ]); setBudgetLines(bl || []); setBudgetReport(br || []); setBudgets(b || []); setBudgetsLoaded(true); } catch (err) { console.error('Failed to load budget data:', err); } }, []);
+useEffect(() => {
+  if (user && dataLoaded && !budgetsLoaded && (currentPage === 'budgets' || currentPage === 'spend-approval' || currentPage === 'budget-matching')) loadBudgetData();
+}, [user, dataLoaded, budgetsLoaded, currentPage, loadBudgetData]);
 const [settingsTab, setSettingsTab] = useState('users');
 useEffect(() => {
   if (currentPage === 'settings' && settingsTab === 'audit' && user) {
@@ -429,12 +429,15 @@ const [hoveredInvoice, setHoveredInvoice] = useState(null);
 const [bulkImport, setBulkImport] = useState({ rows: [], fileName: '', mappings: null, step: null });
 const [spendBulk, setSpendBulk] = useState({ rows: [], fileName: '', mappings: null, step: null });
 const spendBulkFileRef = useRef(null);
+const [budgetBulk, setBudgetBulk] = useState({ rows: [], fileName: '', mappings: null, step: null });
+const budgetBulkFileRef = useRef(null);
 const bulkFileRef = useRef(null);
 const [showColumnSelector, setShowColumnSelector] = useState(false);
 const _uk = (s) => `viewPrefs_${user?.email || 'default'}_${s}`;
 const [visibleColumns, setVisibleColumns] = usePersistedState(_uk('inv_cols'), { invoiceNumber: true, vendor: true, businessUnit: false, subtotal: true, tax: true, total: true, spendApproval: true, file: true, date: false, dueDate: false, submittedBy: false });
 const [groupBy, setGroupBy] = usePersistedState(_uk('inv_group'), 'none');
-const [spendForm, setSpendForm] = useState({ cc:'', title:'', currency:'', approver:'', approverId:null, amount:'', category:'', atom:'', vendor:'', costCentre:'', region:'', project:'', description:'', timeSensitive:false, inBudget:false, exceptional:'', justification:'', department:'', businessUnit:'', originInvoiceId: null });
+const [spendForm, setSpendForm] = useState({ cc:'', title:'', currency:'', approver:'', approverId:null, amount:'', category:'', atom:'', vendor:'', costCentre:'', region:'', project:'', description:'', timeSensitive:false, inBudget:false, exceptional:'', justification:'', department:'', businessUnit:'', originInvoiceIds: [] });
+const [selectedInvoiceIds, setSelectedInvoiceIds] = useState([]);
 const [spendSubmitted, setSpendSubmitted] = useState(false);
 const [pendingAttachments, setPendingAttachments] = useState([]);
 const spendFormAttachRef = useRef(null);
@@ -463,6 +466,7 @@ const getUserFunctions = () => {
   return functions.filter(f => f.active && f.approver === user?.name);
 };
 const [selectedSpend, setSelectedSpend] = useState(null);
+const [editingSpend, setEditingSpend] = useState(null);
 const [selectedSpendIds, setSelectedSpendIds] = useState([]);
 const [spendSearch, setSpendSearch] = useState('');
 const [showSpendFilterPanel, setShowSpendFilterPanel] = useState(false);
@@ -722,6 +726,7 @@ const resendInvitation = (usr) => { logAuditRemote('INVITATION_RESENT', `Invitat
 alert(`Invitation resent to ${usr.email}`);};
 const canApproveSpend = () => hasPermission('spend.approve');
 const canCreateSpend = () => hasPermission('spend.create');
+const canEditSpend = () => hasPermission('spend.edit');
 const inferLookupsFromDepartment = (department) => { const map = { 'Engineering': { atom: 'ENG', costCentre: 'CC200' }, 'Operations': { atom: 'OPS', costCentre: 'CC500' }, 'Sales & Marketing': { atom: 'MKT', costCentre: 'CC400' }, 'Finance & Legal': { atom: '', costCentre: 'CC100' } }; return map[department] || { atom: '', costCentre: '' }; };
 const getRolePermissions = (roleName) => {
   const role = roles.find(r => r.name === roleName);
@@ -828,34 +833,40 @@ const handleBulkFile = (e) => {
     try {
       const data = new Uint8Array(evt.target.result);
       const wb = XLSX.read(data, { type: 'array' });
-      const sheetName = wb.SheetNames[0];
-      const sheet = wb.Sheets[sheetName];
-      const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-      if (json.length === 0) { alert('No data found in file'); return; }
-      const headers = Object.keys(json[0]);
-      const targetFields = ['invoiceNumber','vendor','date','dueDate','amount','taxAmount','currency','department','businessUnit','description'];
-      const fieldLabels = { invoiceNumber:'Invoice #', vendor:'Vendor', date:'Invoice Date', dueDate:'Due Date', amount:'Subtotal/Amount', taxAmount:'Tax Amount', currency:'Currency', department:'Department', businessUnit:'Business Unit', description:'Description' };
-      const autoMap = {};
-      const aliases = { invoiceNumber: ['invoice','inv','invoice_number','invoice #','invoice_no','inv_no','invoice no','inv #','invoicenumber'],
-        vendor: ['vendor','supplier','vendor_name','supplier_name','company'],
-        date: ['date','invoice_date','invoice date','inv_date','invoicedate'],
-        dueDate: ['due','due_date','due date','duedate','payment_date','payment date'],
-        amount: ['amount','subtotal','sub_total','sub total','net','net_amount','net amount','total'],
-        taxAmount: ['tax','vat','tax_amount','tax amount','vat_amount','gst','taxamount'],
-        currency: ['currency','curr','ccy'],
-        department: ['department','dept','dept.','department_name'],
-        businessUnit: ['business_unit','business unit','businessunit','bu','unit'],
-        description: ['description','desc','details','memo','notes','narrative'] };
-      targetFields.forEach(f => {
-        const aliasList = aliases[f] || [f.toLowerCase()];
-        const match = headers.find(h => aliasList.includes(h.toLowerCase().trim()));
-        if (match) autoMap[f] = match;
-      });
-      setBulkImport({ rows: json, fileName: file.name, mappings: autoMap, step: 'map', headers, targetFields, fieldLabels });
+      if (wb.SheetNames.length > 1) {
+        setBulkImport({ rows: [], fileName: file.name, mappings: null, step: 'sheet', workbook: wb, sheetNames: wb.SheetNames });
+      } else {
+        selectBulkSheet(wb, wb.SheetNames[0], file.name);
+      }
     } catch (err) { alert('Failed to parse file: ' + err.message); }
   };
   reader.readAsArrayBuffer(file);
   if (bulkFileRef.current) bulkFileRef.current.value = '';
+};
+const selectBulkSheet = (wb, sheetName, fileName) => {
+  const sheet = wb.Sheets[sheetName];
+  const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  if (json.length === 0) { alert('No data found in sheet "' + sheetName + '"'); return; }
+  const headers = Object.keys(json[0]);
+  const targetFields = ['invoiceNumber','vendor','date','dueDate','amount','taxAmount','currency','department','businessUnit','description'];
+  const fieldLabels = { invoiceNumber:'Invoice #', vendor:'Vendor', date:'Invoice Date', dueDate:'Due Date', amount:'Subtotal/Amount', taxAmount:'Tax Amount', currency:'Currency', department:'Department', businessUnit:'Business Unit', description:'Description' };
+  const autoMap = {};
+  const aliases = { invoiceNumber: ['invoice','inv','invoice_number','invoice #','invoice_no','inv_no','invoice no','inv #','invoicenumber'],
+    vendor: ['vendor','supplier','vendor_name','supplier_name','company'],
+    date: ['date','invoice_date','invoice date','inv_date','invoicedate'],
+    dueDate: ['due','due_date','due date','duedate','payment_date','payment date'],
+    amount: ['amount','subtotal','sub_total','sub total','net','net_amount','net amount','total'],
+    taxAmount: ['tax','vat','tax_amount','tax amount','vat_amount','gst','taxamount'],
+    currency: ['currency','curr','ccy'],
+    department: ['department','dept','dept.','department_name'],
+    businessUnit: ['business_unit','business unit','businessunit','bu','unit'],
+    description: ['description','desc','details','memo','notes','narrative'] };
+  targetFields.forEach(f => {
+    const aliasList = aliases[f] || [f.toLowerCase()];
+    const match = headers.find(h => aliasList.includes(h.toLowerCase().trim()));
+    if (match) autoMap[f] = match;
+  });
+  setBulkImport(prev => ({ ...prev, rows: json, fileName: fileName || prev.fileName, mappings: autoMap, step: 'map', headers, targetFields, fieldLabels, selectedSheet: sheetName }));
 };
 const setBulkMapping = (field, header) => {
   setBulkImport(prev => ({ ...prev, mappings: { ...prev.mappings, [field]: header || undefined } }));
@@ -900,42 +911,48 @@ const handleSpendBulkFile = (e) => {
   reader.onload = (evt) => {
     try {
       const wb = XLSX.read(evt.target.result, { type: 'array' });
-      const sheetName = wb.SheetNames[0];
-      const sheet = wb.Sheets[sheetName];
-      const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-      if (json.length === 0) { alert('No data found in file'); return; }
-      const headers = Object.keys(json[0]);
-      const targetFields = ['ref','title','department','businessUnit','vendor','category','currency','amount','costCentre','atom','region','project','description','status','exceptional','justification'];
-      const fieldLabels = { ref:'Reference',title:'Title',department:'Function / Dept',businessUnit:'Business Unit',vendor:'Vendor',category:'Category',currency:'Currency',amount:'Amount',costCentre:'Cost Centre',atom:'Atom',region:'Region',project:'Project',description:'Description',status:'Status',exceptional:'Exceptional',justification:'Justification' };
-      const aliases = {
-        ref:['ref','reference','sa_ref','spend_ref','sa ref','spend ref','sa_number','sa number'],
-        title:['title','name','description','spend_title','request','request_title'],
-        department:['department','dept','function','dept.','department_name','function_name'],
-        businessUnit:['business_unit','business unit','businessunit','bu','unit'],
-        vendor:['vendor','supplier','vendor_name','supplier_name','company'],
-        category:['category','spend_category','type','spend_type'],
-        currency:['currency','curr','ccy'],
-        amount:['amount','value','total','spend_amount','cost'],
-        costCentre:['cost_centre','cost centre','costcentre','cc','cost_center','cost center'],
-        atom:['atom','atom_code'],
-        region:['region','location','country'],
-        project:['project','project_name'],
-        description:['description','desc','spend_description','details'],
-        status:['status','approval_status'],
-        exceptional:['exceptional','exception'],
-        justification:['justification','reason','business_justification','notes','comments']
-      };
-      const autoMap = {};
-      targetFields.forEach(f => {
-        const aliasList = aliases[f] || [f.toLowerCase()];
-        const match = headers.find(h => aliasList.includes(h.toLowerCase().trim()));
-        if (match) autoMap[f] = match;
-      });
-      setSpendBulk({ rows: json, fileName: file.name, mappings: autoMap, step: 'map', headers, targetFields, fieldLabels });
+      if (wb.SheetNames.length > 1) {
+        setSpendBulk({ rows: [], fileName: file.name, mappings: null, step: 'sheet', workbook: wb, sheetNames: wb.SheetNames });
+      } else {
+        selectSpendBulkSheet(wb, wb.SheetNames[0], file.name);
+      }
     } catch (err) { alert('Failed to parse file: ' + err.message); }
   };
   reader.readAsArrayBuffer(file);
   if (spendBulkFileRef.current) spendBulkFileRef.current.value = '';
+};
+const selectSpendBulkSheet = (wb, sheetName, fileName) => {
+  const sheet = wb.Sheets[sheetName];
+  const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  if (json.length === 0) { alert('No data found in sheet "' + sheetName + '"'); return; }
+  const headers = Object.keys(json[0]);
+  const targetFields = ['ref','title','department','businessUnit','vendor','category','currency','amount','costCentre','atom','region','project','description','status','exceptional','justification'];
+  const fieldLabels = { ref:'Reference',title:'Title',department:'Function / Dept',businessUnit:'Business Unit',vendor:'Vendor',category:'Category',currency:'Currency',amount:'Amount',costCentre:'Cost Centre',atom:'Atom',region:'Region',project:'Project',description:'Description',status:'Status',exceptional:'Exceptional',justification:'Justification' };
+  const aliases = {
+    ref:['ref','reference','sa_ref','spend_ref','sa ref','spend ref','sa_number','sa number'],
+    title:['title','name','description','spend_title','request','request_title'],
+    department:['department','dept','function','dept.','department_name','function_name'],
+    businessUnit:['business_unit','business unit','businessunit','bu','unit'],
+    vendor:['vendor','supplier','vendor_name','supplier_name','company'],
+    category:['category','spend_category','type','spend_type'],
+    currency:['currency','curr','ccy'],
+    amount:['amount','value','total','spend_amount','cost'],
+    costCentre:['cost_centre','cost centre','costcentre','cc','cost_center','cost center'],
+    atom:['atom','atom_code'],
+    region:['region','location','country'],
+    project:['project','project_name'],
+    description:['description','desc','spend_description','details'],
+    status:['status','approval_status'],
+    exceptional:['exceptional','exception'],
+    justification:['justification','reason','business_justification','notes','comments']
+  };
+  const autoMap = {};
+  targetFields.forEach(f => {
+    const aliasList = aliases[f] || [f.toLowerCase()];
+    const match = headers.find(h => aliasList.includes(h.toLowerCase().trim()));
+    if (match) autoMap[f] = match;
+  });
+  setSpendBulk(prev => ({ ...prev, rows: json, fileName: fileName || prev.fileName, mappings: autoMap, step: 'map', headers, targetFields, fieldLabels, selectedSheet: sheetName }));
 };
 const setSpendBulkMapping = (field, header) => {
   setSpendBulk(prev => ({ ...prev, mappings: { ...prev.mappings, [field]: header || undefined } }));
@@ -1120,6 +1137,110 @@ const addBulkBudgetLines = async (budgetId, items) => {
   } catch (err) { alert('Failed to import lines: ' + err.message); return 0; }
 };
 
+// --- Budget Bulk Import (XLSX with field mapping) ---
+const handleBudgetBulkFile = (e) => {
+  const file = e.target.files?.[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (evt) => {
+    try {
+      const data = new Uint8Array(evt.target.result);
+      const wb = XLSX.read(data, { type: 'array' });
+      if (wb.SheetNames.length > 1) {
+        setBudgetBulk({ rows: [], fileName: file.name, mappings: null, step: 'sheet', workbook: wb, sheetNames: wb.SheetNames });
+      } else {
+        selectBudgetBulkSheet(wb, wb.SheetNames[0], file.name);
+      }
+    } catch (err) { alert('Failed to parse file: ' + err.message); }
+  };
+  reader.readAsArrayBuffer(file);
+  if (budgetBulkFileRef.current) budgetBulkFileRef.current.value = '';
+};
+const selectBudgetBulkSheet = (wb, sheetName, fileName) => {
+  const sheet = wb.Sheets[sheetName];
+  const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  if (json.length === 0) { alert('No data found in sheet "' + sheetName + '"'); return; }
+  const headers = Object.keys(json[0]);
+  const targetFields = ['licence','vendor','type','businessUnit','serviceCategory','costCentre','region','currency','eurAnnual','contractValue','contractEndDate','comments','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const fieldLabels = { licence:'Licence / Service', vendor:'Vendor', type:'Type', businessUnit:'Business Unit', serviceCategory:'Service Category', costCentre:'Cost Centre', region:'Region', currency:'Currency', eurAnnual:'EUR Annual', contractValue:'Contract Value', contractEndDate:'Contract End Date', comments:'Comments', Jan:'Jan',Feb:'Feb',Mar:'Mar',Apr:'Apr',May:'May',Jun:'Jun',Jul:'Jul',Aug:'Aug',Sep:'Sep',Oct:'Oct',Nov:'Nov',Dec:'Dec' };
+  const aliases = {
+    licence: ['licence','license','service','service_name','licence_name','license_name','name'],
+    vendor: ['vendor','supplier','vendor_name','supplier_name','company'],
+    type: ['type','line_type','category'],
+    businessUnit: ['business_unit','business unit','businessunit','bu','unit'],
+    serviceCategory: ['service_category','service category','servicecategory','category'],
+    costCentre: ['cost_centre','cost centre','costcentre','cc','cost_center','cost center'],
+    region: ['region','location','country'],
+    currency: ['currency','curr','ccy'],
+    eurAnnual: ['eur_annual','eur annual','eurannual','annual_eur','annual eur','annual','eur'],
+    contractValue: ['contract_value','contract value','contractvalue','value'],
+    contractEndDate: ['contract_end_date','contract end date','contractenddate','end_date','end date','expiry','expiry_date'],
+    comments: ['comments','comment','notes','remarks'],
+    Jan:['jan','january'],Feb:['feb','february'],Mar:['mar','march'],Apr:['apr','april'],
+    May:['may'],Jun:['jun','june'],Jul:['jul','july'],Aug:['aug','august'],
+    Sep:['sep','sept','september'],Oct:['oct','october'],Nov:['nov','november'],Dec:['dec','december']
+  };
+  const autoMap = {};
+  targetFields.forEach(f => {
+    const aliasList = aliases[f] || [f.toLowerCase()];
+    const match = headers.find(h => aliasList.includes(h.toLowerCase().trim()));
+    if (match) autoMap[f] = match;
+  });
+  setBudgetBulk(prev => ({ ...prev, rows: json, fileName: fileName || prev.fileName, mappings: autoMap, step: 'map', headers, targetFields, fieldLabels, selectedSheet: sheetName }));
+};
+const setBudgetBulkMapping = (field, header) => {
+  setBudgetBulk(prev => ({ ...prev, mappings: { ...prev.mappings, [field]: header || undefined } }));
+};
+const budgetBulkPreview = () => {
+  if (!budgetBulk.mappings?.licence && !budgetBulk.mappings?.vendor) { alert('Please map at least Licence/Service or Vendor'); return; }
+  setBudgetBulk(prev => ({ ...prev, step: 'preview' }));
+};
+const getBudgetMappedRows = () => {
+  const m = budgetBulk.mappings || {};
+  const monthKeys = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return budgetBulk.rows.map(row => {
+    const mapped = {};
+    Object.entries(m).forEach(([field, header]) => { if (header) mapped[field] = String(row[header] ?? '').trim(); });
+    // Build monthlyBudget object
+    const hasMonths = monthKeys.some(mk => mapped[mk]);
+    const mb = {};
+    if (hasMonths) {
+      monthKeys.forEach(mk => { mb[mk] = parseFloat(String(mapped[mk]).replace(/[^0-9.\-]/g,'')) || 0; });
+    } else {
+      const eurVal = parseFloat(String(mapped.eurAnnual || '0').replace(/[^0-9.\-]/g,'')) || 0;
+      const monthly = eurVal / 12;
+      monthKeys.forEach(mk => { mb[mk] = monthly; });
+    }
+    const eurAnnual = hasMonths ? monthKeys.reduce((s, mk) => s + mb[mk], 0) : (parseFloat(String(mapped.eurAnnual || '0').replace(/[^0-9.\-]/g,'')) || 0);
+    return {
+      licence: mapped.licence || '',
+      vendor: mapped.vendor || '',
+      type: mapped.type || 'BAU',
+      businessUnit: mapped.businessUnit || '',
+      serviceCategory: mapped.serviceCategory || '',
+      costCentre: mapped.costCentre || '',
+      region: mapped.region || '',
+      currency: mapped.currency || 'EUR',
+      eurAnnual: eurAnnual || null,
+      contractValue: mapped.contractValue ? parseFloat(String(mapped.contractValue).replace(/[^0-9.\-]/g,'')) || null : null,
+      contractEndDate: mapped.contractEndDate || '',
+      comments: mapped.comments || '',
+      monthlyBudget: mb,
+    };
+  }).filter(r => r.licence || r.vendor);
+};
+const confirmBudgetBulkImport = async () => {
+  const rows = getBudgetMappedRows();
+  if (rows.length === 0) { alert('No valid rows to import'); return; }
+  setIsProcessing(true);
+  try {
+    const count = await addBulkBudgetLines(selectedBudget.id, rows);
+    const totalEur = rows.reduce((s, r) => s + (r.eurAnnual || 0), 0);
+    const vendors = [...new Set(rows.map(r => r.vendor).filter(Boolean))];
+    setBudgetBulk({ rows: [], fileName: '', mappings: null, step: 'success', summary: { count, totalEur, vendors, fileName: budgetBulk.fileName } });
+  } catch (err) { alert('Budget import failed: ' + err.message); }
+  setIsProcessing(false);
+};
+
 const handleAiImport = async (file) => {
   setAiImport({ open: true, loading: true, error: null, result: null, fileName: file.name });
   try {
@@ -1167,63 +1288,84 @@ return (<div className={_pg}><div className="w-full">{budgetNavBar}
 {isDraft && (<div className="flex items-center space-x-3 mb-4">
 <button onClick={() => (sb.lineItems||[]).length > 0 ? submitBudget(sb.id) : alert('Add at least one line item before submitting')} className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold"><Send className="w-4 h-4"/><span>Submit Budget</span></button>
 <button onClick={() => addBudgetLineItem(sb.id, { licence: '', type: 'BAU', currency: 'EUR', eurAnnual: 0, monthlyBudget: { Jan:0,Feb:0,Mar:0,Apr:0,May:0,Jun:0,Jul:0,Aug:0,Sep:0,Oct:0,Nov:0,Dec:0 } })} className="flex items-center space-x-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-semibold"><Plus className="w-4 h-4"/><span>Add Line Item</span></button>
-<label className="flex items-center space-x-2 px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 font-semibold cursor-pointer"><Upload className="w-4 h-4"/><span>Import CSV</span>
-<input type="file" accept=".csv" className="hidden" onChange={async (e) => {
-  const file = e.target.files?.[0]; if (!file) return; e.target.value = '';
-  const text = await file.text();
-  const lines = text.split('\n').map(l => l.split(',').map(c => c.trim().replace(/^"|"$/g, '')));
-  const headers = lines[0].map(h => h.toLowerCase());
-  const licIdx = headers.findIndex(h => h.includes('licence') || h.includes('license') || h.includes('service'));
-  if (licIdx === -1) { alert('CSV must have a licence/service column'); return; }
-  const vendIdx = headers.findIndex(h => h.includes('vendor'));
-  const typeIdx = headers.findIndex(h => h.includes('type'));
-  const eurIdx = headers.findIndex(h => h.includes('eur') && h.includes('annual'));
-  const curIdx = headers.findIndex(h => h.includes('currency'));
-  const regIdx = headers.findIndex(h => h.includes('region'));
-  const ccIdx = headers.findIndex(h => h.includes('cost') && h.includes('centre'));
-  const cvIdx = headers.findIndex(h => h.includes('contract') && h.includes('value'));
-  const cedIdx = headers.findIndex(h => h.includes('contract') && h.includes('end'));
-  const buIdx = headers.findIndex(h => h.includes('business') && h.includes('unit'));
-  const scIdx = headers.findIndex(h => h.includes('service') && h.includes('category'));
-  const monthNames = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
-  const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const monthIdxs = monthNames.map(m => headers.findIndex(h => h.trim().toLowerCase() === m || h.trim().toLowerCase().startsWith(m) && h.trim().length <= 4));
-  const hasMonthCols = monthIdxs.some(i => i >= 0);
-  const items = [];
-  for (let i = 1; i < lines.length; i++) {
-    const r = lines[i]; if (!r[licIdx]) continue;
-    let mb = {};
-    if (hasMonthCols) {
-      monthIdxs.forEach((idx, mi) => { if (idx >= 0) mb[monthLabels[mi]] = parseFloat(r[idx]) || 0; else mb[monthLabels[mi]] = 0; });
-    } else {
-      const eurVal = eurIdx >= 0 ? parseFloat(r[eurIdx]) || 0 : 0;
-      const monthly = eurVal / 12;
-      monthLabels.forEach(m => { mb[m] = monthly; });
-    }
-    const eurVal = eurIdx >= 0 ? parseFloat(r[eurIdx]) || 0 : monthLabels.reduce((s, m) => s + (mb[m]||0), 0);
-    items.push({
-      licence: r[licIdx],
-      vendor: vendIdx >= 0 ? r[vendIdx] : '',
-      type: typeIdx >= 0 ? r[typeIdx] : 'BAU',
-      eurAnnual: eurVal || null,
-      currency: curIdx >= 0 ? r[curIdx] : 'EUR',
-      region: regIdx >= 0 ? r[regIdx] : '',
-      costCentre: ccIdx >= 0 ? r[ccIdx] : '',
-      contractValue: cvIdx >= 0 ? parseFloat(r[cvIdx]) || null : null,
-      contractEndDate: cedIdx >= 0 ? r[cedIdx] : '',
-      businessUnit: buIdx >= 0 ? r[buIdx] : '',
-      serviceCategory: scIdx >= 0 ? r[scIdx] : '',
-      monthlyBudget: mb,
-    });
-  }
-  if (items.length === 0) { alert('No valid rows found in CSV'); return; }
-  const count = await addBulkBudgetLines(sb.id, items);
-  if (count > 0) alert(`${count} line item(s) imported successfully`);
-}}/></label>
+<input ref={budgetBulkFileRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleBudgetBulkFile} className="hidden" id="budget-bulk-upload"/>
+<label htmlFor="budget-bulk-upload" className="flex items-center space-x-2 px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 font-semibold cursor-pointer text-sm"><Upload className="w-4 h-4"/><span>Import XLSX</span></label>
 <label className="flex items-center space-x-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-semibold cursor-pointer"><Sparkles className="w-4 h-4"/><span>AI Import</span>
 <input type="file" accept=".xlsx,.xls" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; if (!file) return; e.target.value = ''; handleAiImport(file); }}/></label>
 </div>)}
 </div>
+{/* Budget Bulk Import - Sheet */}
+{budgetBulk.step === 'sheet' && (<div className="bg-amber-50 border border-amber-200 rounded-lg p-6 mb-6">
+<div className={_fj+" mb-4"}><h3 className="text-xl font-semibold text-gray-800">Select Sheet — {budgetBulk.fileName}</h3>
+<button onClick={() => setBudgetBulk({ rows: [], fileName: '', mappings: null, step: null })} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Cancel</button>
+</div>
+<p className="text-sm text-gray-600 mb-4">This workbook has multiple sheets. Select which sheet to import from.</p>
+<div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+{budgetBulk.sheetNames.map(name => (<button key={name} onClick={() => selectBudgetBulkSheet(budgetBulk.workbook, name, budgetBulk.fileName)} className="px-4 py-3 bg-white border-2 border-amber-200 rounded-lg hover:border-amber-500 hover:bg-amber-50 text-sm font-medium text-gray-800 transition text-left"><FileSpreadsheet className="w-4 h-4 text-amber-600 inline mr-2"/>{name}</button>))}
+</div>
+</div>)}
+{/* Budget Bulk Import - Map */}
+{budgetBulk.step === 'map' && (<div className="bg-amber-50 border border-amber-200 rounded-lg p-6 mb-6">
+<div className={_fj+" mb-4"}><h3 className="text-xl font-semibold text-gray-800">Map Columns — {budgetBulk.fileName}{budgetBulk.selectedSheet ? ` — ${budgetBulk.selectedSheet}` : ''}</h3>
+<div className="flex space-x-3">
+{budgetBulk.sheetNames?.length > 1 && <button onClick={() => setBudgetBulk(prev => ({ ...prev, step: 'sheet' }))} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Back to Sheets</button>}
+<button onClick={() => setBudgetBulk({ rows: [], fileName: '', mappings: null, step: null })} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Cancel</button>
+<button onClick={budgetBulkPreview} className="px-5 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 text-sm font-semibold">Preview Import</button>
+</div></div>
+<p className="text-sm text-gray-600 mb-4">Map your spreadsheet columns to budget line item fields. We auto-detected what we could.</p>
+<div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+{budgetBulk.targetFields.map(f => (<div key={f}>
+<label className="block text-xs font-semibold text-gray-600 mb-1">{budgetBulk.fieldLabels[f]}</label>
+<select value={budgetBulk.mappings?.[f] || ''} onChange={e => setBudgetBulkMapping(f, e.target.value)} className={`w-full text-sm ${_i}`}>
+<option value="">— skip —</option>
+{budgetBulk.headers.map(h => (<option key={h} value={h}>{h}</option>))}
+</select>
+</div>))}
+</div>
+<p className="text-xs text-gray-500 mt-3">{budgetBulk.rows.length} row(s) found in spreadsheet</p>
+</div>)}
+{/* Budget Bulk Import - Preview */}
+{budgetBulk.step === 'preview' && (() => { const previewRows = getBudgetMappedRows();
+const displayFields = ['licence','vendor','type','businessUnit','eurAnnual','currency','costCentre','region'];
+const displayLabels = { licence:'Licence/Service', vendor:'Vendor', type:'Type', businessUnit:'Business Unit', eurAnnual:'EUR Annual', currency:'Currency', costCentre:'Cost Centre', region:'Region' };
+return (<div className="bg-amber-50 border border-amber-200 rounded-lg p-6 mb-6">
+<div className={_fj+" mb-4"}><h3 className="text-xl font-semibold text-gray-800">Preview Import — {previewRows.length} line item(s)</h3>
+<div className="flex space-x-3">
+<button onClick={() => setBudgetBulk(prev => ({ ...prev, step: 'map' }))} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Back</button>
+<button onClick={() => setBudgetBulk({ rows: [], fileName: '', mappings: null, step: null })} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Cancel</button>
+<button onClick={confirmBudgetBulkImport} disabled={isProcessing || previewRows.length === 0} className="px-5 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 text-sm font-semibold disabled:opacity-50 flex items-center space-x-2">
+<CheckCircle className="w-4 h-4"/><span>{isProcessing ? 'Importing...' : `Import ${previewRows.length} Line Item${previewRows.length !== 1 ? 's' : ''}`}</span></button>
+</div></div>
+<div className="overflow-x-auto max-h-80 overflow-y-auto"><table className="w-full text-sm">
+<thead className="bg-amber-100 sticky top-0"><tr>
+{displayFields.map(f => (<th key={f} className="px-3 py-2 text-left text-xs font-semibold text-amber-800">{displayLabels[f]}</th>))}
+</tr></thead>
+<tbody className="divide-y divide-amber-100">{previewRows.slice(0, 50).map((row, i) => (
+<tr key={i} className="hover:bg-amber-50">
+{displayFields.map(f => (
+<td key={f} className="px-3 py-1.5 max-w-[160px] truncate text-gray-700">{f === 'eurAnnual' ? (row[f] != null ? `€${Number(row[f]).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—') : (row[f] || '—')}</td>
+))}</tr>))}</tbody></table></div>
+{previewRows.length > 50 && <p className="text-xs text-gray-500 mt-2 text-center">Showing first 50 of {previewRows.length} rows</p>}
+</div>); })()}
+{/* Budget Bulk Import - Success */}
+{budgetBulk.step === 'success' && (<div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+<div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+<div className="text-center">
+<div className="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-amber-100 mb-4"><CheckCircle className="h-10 w-10 text-amber-600"/></div>
+<h3 className="text-xl font-bold text-gray-900 mb-2">Import Complete</h3>
+<p className="text-gray-600 mb-5">Budget line items have been successfully imported.</p>
+</div>
+<div className="bg-gray-50 rounded-lg p-4 space-y-3 mb-5">
+<div className="flex justify-between text-sm"><span className="text-gray-500">Source File</span><span className="font-medium text-gray-800">{budgetBulk.summary?.fileName}</span></div>
+<div className="flex justify-between text-sm"><span className="text-gray-500">Line Items Imported</span><span className="font-bold text-amber-700">{budgetBulk.summary?.count}</span></div>
+<div className="flex justify-between text-sm"><span className="text-gray-500">Total EUR Annual</span><span className="font-bold text-amber-700">€{(budgetBulk.summary?.totalEur || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
+<div className="flex justify-between text-sm"><span className="text-gray-500">Unique Vendors</span><span className="font-medium text-gray-800">{budgetBulk.summary?.vendors?.length || 0}</span></div>
+{budgetBulk.summary?.vendors?.length > 0 && budgetBulk.summary.vendors.length <= 5 && (
+<div className="text-sm"><span className="text-gray-500">Vendors: </span><span className="text-gray-700">{budgetBulk.summary.vendors.join(', ')}</span></div>
+)}
+</div>
+<button onClick={() => setBudgetBulk({ rows: [], fileName: '', mappings: null, step: null })} className="w-full px-4 py-3 bg-amber-600 text-white rounded-lg hover:bg-amber-700 font-semibold">OK</button>
+</div></div>)}
 {/* Line Items Table */}
 {(() => { const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const fmtM = v => typeof v === 'number' ? v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : '0.00';
@@ -1705,12 +1847,15 @@ const num = String(spendApprovals.length+1).padStart(4,'0');
 const ref = `SA-${num}-${sf.atom}-${sf.costCentre}-${sf.region}`;
 try {
 const saved = await api.post('/api/spend-approvals', { ref, title:sf.title, currency:sf.currency, amount:sf.amount, category:sf.category, vendor:sf.vendor, businessUnit:sf.businessUnit||null, costCentre:sf.costCentre, atom:sf.atom, region:sf.region, project:sf.project, description:sf.description||null, department:sf.department, approverId:sf.approverId, submittedBy:user.name, inBudget:sf.inBudget, exceptional:sf.exceptional, timeSensitive:sf.timeSensitive, justification:sf.justification, ccRecipients:sf.cc || null });
-setSpendApprovals(prev => [{ ...saved, approver: sf.approver, originInvoiceId: sf.originInvoiceId || null, attachments: [] }, ...prev]);
-// Auto-link origin invoice immediately
-if (sf.originInvoiceId) {
-try { await api.patch(`/api/invoices/${sf.originInvoiceId}/link`, { spendApprovalId: saved.id });
-setInvoices(prev => prev.map(i => i.id === sf.originInvoiceId ? { ...i, spendApprovalId: saved.id, spendApprovalTitle: sf.title } : i));
+setSpendApprovals(prev => [{ ...saved, approver: sf.approver, originInvoiceIds: sf.originInvoiceIds || [], attachments: [] }, ...prev]);
+// Auto-link origin invoices immediately
+if (sf.originInvoiceIds && sf.originInvoiceIds.length > 0) {
+for (const invId of sf.originInvoiceIds) {
+try { await api.patch(`/api/invoices/${invId}/link`, { spendApprovalId: saved.id });
+setInvoices(prev => prev.map(i => i.id === invId ? { ...i, spendApprovalId: saved.id, spendApprovalTitle: sf.title } : i));
 } catch (e) { console.error('Failed to auto-link invoice:', e); }
+}
+setSelectedInvoiceIds([]);
 }
 // Upload any pending attachments
 for (const pa of pendingAttachments) {
@@ -1726,7 +1871,7 @@ setPendingBudgetLineIds([]);
 setPendingAttachments([]);
 setSpendSubmitted(true);
 } catch (err) { console.error('Failed to create spend approval:', err); alert('Failed to create spend approval: ' + (err.message || 'Unknown error'));
-const newApproval = { id: Date.now(), ref, title:sf.title, currency:sf.currency, amount:sf.amount, category:sf.category, vendor:sf.vendor, approver:sf.approver, businessUnit:sf.businessUnit||null, costCentre:sf.costCentre, atom:sf.atom, region:sf.region, project:sf.project, department:sf.department, status:'Pending', submittedBy:user.name, submittedAt:new Date().toISOString(), inBudget:sf.inBudget, exceptional:sf.exceptional, timeSensitive:sf.timeSensitive, justification:sf.justification, ccRecipients:sf.cc || null, originInvoiceId: sf.originInvoiceId || null };
+const newApproval = { id: Date.now(), ref, title:sf.title, currency:sf.currency, amount:sf.amount, category:sf.category, vendor:sf.vendor, approver:sf.approver, businessUnit:sf.businessUnit||null, costCentre:sf.costCentre, atom:sf.atom, region:sf.region, project:sf.project, department:sf.department, status:'Pending', submittedBy:user.name, submittedAt:new Date().toISOString(), inBudget:sf.inBudget, exceptional:sf.exceptional, timeSensitive:sf.timeSensitive, justification:sf.justification, ccRecipients:sf.cc || null, originInvoiceIds: sf.originInvoiceIds || [] };
 setSpendApprovals(prev => [newApproval, ...prev]);
 setSpendSubmitted(true); } };
 const uploadInvoiceToSpend = async (files, spend) => {
@@ -1793,6 +1938,7 @@ setSelectedSpend(prev => prev && prev.id === spend.id ? { ...prev, attachments: 
 const navBar = (<div className="bg-white rounded-lg shadow-lg p-6 mb-6"><div className={_fj}> <div className="flex items-center space-x-3"><DollarSign className="w-8 h-8 text-green-600"/><h1 className="text-2xl font-bold text-gray-800">Spend Approvals</h1></div>
 <div className="flex items-center space-x-4"><div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 rounded-lg"><User className="w-5 h-5 text-indigo-600"/><div className="text-sm"><p className="font-semibold text-gray-800">{user.name}</p><p className="text-xs text-gray-600">{user.role}</p></div></div><button onClick={() => setCurrentPage('landing')} className="flex items-center space-x-2 px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200"><Home className="w-4 h-4"/><span>Dashboard</span></button>{hasPermission('reports.view') && <button onClick={() => setCurrentPage('reports')} className="flex items-center space-x-2 px-4 py-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200"><BarChart3 className="w-4 h-4"/><span>Reports</span></button>}<button onClick={logout} className="flex items-center space-x-2 px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200"><LogOut className="w-4 h-4"/><span>Logout</span></button></div>
 </div></div>);
+const saveSpendEdit = async () => { if (!editingSpend) return; try { const updated = await api.put(`/api/spend-approvals/${editingSpend.id}`, editingSpend); const approverName = updated.approver?.name || updated.approver; const merged = { ...updated, approver: approverName }; setSpendApprovals(prev => prev.map(s => s.id === merged.id ? { ...s, ...merged } : s)); setSelectedSpend(prev => prev ? { ...prev, ...merged } : prev); setEditingSpend(null); } catch (err) { alert('Failed to save: ' + (err.message || 'Unknown error')); } };
 const getCeoUser = () => mockUsers.find(u => u.isCeo && u.status === 'Active');
 const updateSpendStatus = async (id, status) => { const item = spendApprovals.find(s=>s.id===id);
 if (status === 'Approved' && item.status === 'Pending') { const limit = user.approvalLimit || 0; const amt = toEur(item.amount, item.currency);
@@ -1803,7 +1949,7 @@ if (status === 'Approved') { await api.patch(`/api/spend-approvals/${id}/approve
 else if (status === 'Rejected') { await api.patch(`/api/spend-approvals/${id}/reject`); }
 } catch (err) { console.error(`Failed to ${status.toLowerCase()} spend:`, err); alert(`Failed to ${status.toLowerCase()}: ${err.message}`); return false; }
 setSpendApprovals(prev => prev.map(s => s.id===id ? {...s, status, approvedBy:status==='Approved'||status==='Rejected'?user.name:s.approvedBy} : s));
-if (status === 'Approved' && item.originInvoiceId) { const originInv = invoices.find(i => i.id === item.originInvoiceId); if (originInv && !originInv.spendApprovalId) { api.patch(`/api/invoices/${item.originInvoiceId}/link`, { spendApprovalId: id }).then(() => { setInvoices(prev => prev.map(i => i.id === item.originInvoiceId ? {...i, spendApprovalId: id, spendApprovalTitle: item.title} : i)); checkSpendThreshold(id, toEur(invoiceTotal(originInv), originInv.currency||item.currency)); }).catch(e => console.error('Failed to auto-link invoice on approval:', e)); } }};
+if (status === 'Approved' && item.originInvoiceIds && item.originInvoiceIds.length > 0) { for (const oid of item.originInvoiceIds) { const originInv = invoices.find(i => i.id === oid); if (originInv && !originInv.spendApprovalId) { api.patch(`/api/invoices/${oid}/link`, { spendApprovalId: id }).then(() => { setInvoices(prev => prev.map(i => i.id === oid ? {...i, spendApprovalId: id, spendApprovalTitle: item.title} : i)); checkSpendThreshold(id, toEur(invoiceTotal(originInv), originInv.currency||item.currency)); }).catch(e => console.error('Failed to auto-link invoice on approval:', e)); } } }};
 const confirmEscalation = () => { const item = showEscalationModal; if (!item) return; const ceo = getCeoUser();
 setSpendApprovals(prev => prev.map(s => s.id===item.id ? {...s, status:'Escalated', approvedBy:user.name, escalatedTo:ceo?.name||'CEO', escalatedAt:new Date().toISOString()} : s));
 const limit = user.approvalLimit || 0;
@@ -1824,38 +1970,40 @@ setSpendApprovals(prev => prev.map(s => ids.includes(s.id) ? {...s, status, appr
 setSelectedSpendIds([]);};
 if (spendSubmitted) { return (<div className={_pg}><div className="w-full max-w-4xl mx-auto">{navBar}
 <div className="bg-white rounded-xl shadow-lg p-12 text-center"> <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4"/> <h2 className="text-2xl font-bold text-gray-800 mb-3">Request Submitted</h2> <p className="text-gray-500 mb-2">Your spend approval for <strong>{sf.title}</strong> has been submitted.</p> <p className="text-gray-500 mb-2">{fmtEur(sf.amount, sf.currency)} • Approver: {sf.approver}</p>{sf.currency !== 'EUR' && <p className="text-xs text-gray-400 mb-8">Original: {sf.currency} {Number(sf.amount).toLocaleString()}</p>} <div className="flex justify-center space-x-4">
-<button onClick={() => { setSpendForm({ cc:'', title:'', currency:'', approver:'', approverId:null, amount:'', category:'', atom:'', vendor:'', costCentre:'', region:'', project:'', description:'', timeSensitive:false, inBudget:false, exceptional:'', justification:'', department:'', businessUnit:'', originInvoiceId: null }); setPendingAttachments([]); setPendingBudgetLineIds([]); setSpendLinkBudgetId(null); setSpendSubmitted(false); }} className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold">Create Another</button> <button onClick={() => { setSpendSubmitted(false); setSpendView('list'); }} className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition font-semibold">Back to Spend Approvals</button></div></div> </div></div>);}
+<button onClick={() => { setSpendForm({ cc:'', title:'', currency:'', approver:'', approverId:null, amount:'', category:'', atom:'', vendor:'', costCentre:'', region:'', project:'', description:'', timeSensitive:false, inBudget:false, exceptional:'', justification:'', department:'', businessUnit:'', originInvoiceIds: [] }); setPendingAttachments([]); setPendingBudgetLineIds([]); setSpendLinkBudgetId(null); setSpendSubmitted(false); }} className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold">Create Another</button> <button onClick={() => { setSpendSubmitted(false); setSpendView('list'); }} className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition font-semibold">Back to Spend Approvals</button></div></div> </div></div>);}
 if (selectedSpend) { const s = selectedSpend;
 const sBadge2 = (status) => { const c = {Pending:'bg-yellow-100 text-yellow-800',Approved:'bg-green-100 text-green-800',Rejected:'bg-red-100 text-red-800',Escalated:'bg-orange-100 text-orange-800'}; return <span className={`px-3 py-1 rounded-full text-sm font-semibold ${c[status]||'bg-gray-100 text-gray-800'}`}>{status}</span>; };
 const dRow = (label, val) => (<div className="py-3 border-b border-gray-100 grid grid-cols-3"><span className="text-sm font-medium text-gray-500">{label}</span><span className="text-sm text-gray-900 col-span-2">{val}</span></div>);
 return (<div className={_pg}><div className="w-full">{navBar}
-<div className="bg-white rounded-lg shadow p-4 mb-4"> <div className="flex items-center justify-between"> <div className="flex items-center space-x-3"> <button onClick={() => setSelectedSpend(null)} className="flex items-center space-x-1 text-indigo-600 hover:text-indigo-800 text-sm font-medium">← Back</button> <span className="text-gray-300">|</span> <h1 className="text-xl font-bold text-gray-800">{s.title}</h1> <span className="font-mono text-sm text-indigo-600 font-semibold">{s.ref}</span> {sBadge2(s.status)}</div> <div className="flex items-center space-x-2">
+<div className="bg-white rounded-lg shadow p-4 mb-4"> <div className="flex items-center justify-between"> <div className="flex items-center space-x-3"> <button onClick={() => { setSelectedSpend(null); setEditingSpend(null); }} className="flex items-center space-x-1 text-indigo-600 hover:text-indigo-800 text-sm font-medium">← Back</button> <span className="text-gray-300">|</span> <h1 className="text-xl font-bold text-gray-800">{s.title}</h1> <span className="font-mono text-sm text-indigo-600 font-semibold">{s.ref}</span> {sBadge2(s.status)}</div> <div className="flex items-center space-x-2">
 {(s.status === 'Pending' || s.status === 'Escalated') && canApproveSpend() && (s.status !== 'Escalated' || user.isCeo || hasPermission('settings.manage_users')) && (<> <button onClick={async () => { const result = await updateSpendStatus(s.id,'Approved'); if (result !== false) setSelectedSpend({...s,status:'Approved'}); }} className="px-4 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold text-sm">{s.status === 'Escalated' ? 'Final Approve' : 'Approve'}</button>
 <button onClick={async () => { const result = await updateSpendStatus(s.id,'Rejected'); if (result !== false) setSelectedSpend({...s,status:'Rejected'}); }} className="px-4 py-1.5 bg-red-600 text-white rounded-lg hover:bg-red-700 font-semibold text-sm">Reject</button></>)}
+{canEditSpend() && !editingSpend && <button onClick={() => setEditingSpend({...s})} className="px-4 py-1.5 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200 font-semibold text-sm flex items-center space-x-1"><Edit3 className="w-4 h-4"/><span>Edit</span></button>}
+{editingSpend && (<><button onClick={saveSpendEdit} className="px-4 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold text-sm">Save</button><button onClick={() => setEditingSpend(null)} className="px-4 py-1.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 font-semibold text-sm">Cancel</button></>)}
 <button onClick={async () => { if (!confirm(`Delete spend approval "${s.title}" (${s.ref})? This cannot be undone.`)) return; try { await api.delete(`/api/spend-approvals/${s.id}`); setSpendApprovals(prev => prev.filter(x => x.id !== s.id)); setBudgetLines(prev => prev.map(bl => bl.spendApprovalId === s.id ? {...bl, spendApprovalId: null, spendApproval: null} : bl)); api.get('/api/budget-report').then(d => setBudgetReport(d||[])).catch(() => {}); setSelectedSpend(null); } catch(err) { alert('Failed to delete: ' + err.message); }}} className="px-4 py-1.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 font-semibold text-sm flex items-center space-x-1"><Trash2 className="w-4 h-4"/><span>Delete</span></button></div></div></div>
 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
 {/* Left column: Spend details */}
 <div className="space-y-4">
-<div className="bg-white rounded-lg shadow p-4"> <h2 className="text-lg font-bold text-gray-800 mb-3">Spend Details</h2> <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-<div> <label className="text-xs text-gray-500">Requested Amount</label> <p className="text-lg font-bold text-green-600">{fmtEur(s.amount, s.currency)}{s.currency !== 'EUR' && <span className="text-xs text-gray-400 ml-1">({s.currency} {Number(s.amount).toLocaleString()})</span>}</p></div>
-<div> <label className="text-xs text-gray-500">Vendor / Supplier</label> <p className="text-sm font-semibold text-gray-800">{s.vendor}</p></div>
-<div> <label className="text-xs text-gray-500">Spend Category</label> <p className="text-sm font-semibold text-gray-800">{s.category}</p></div>
-<div> <label className="text-xs text-gray-500">Function / Department</label> <p className="text-sm font-semibold text-gray-800">{s.department || '—'}</p></div>
-<div> <label className="text-xs text-gray-500">Business Unit</label> <p className="text-sm font-semibold text-gray-800">{s.businessUnit || '—'}</p></div>
-<div> <label className="text-xs text-gray-500">Approver</label> <p className="text-sm font-semibold text-gray-800">{s.approver} {(() => { const au = mockUsers.find(u=>u.name===s.approver); return au && au.approvalLimit > 0 ? <span className="text-xs text-gray-400">(€{au.approvalLimit.toLocaleString()})</span> : au?.isCeo ? <span className="text-xs text-gray-400">(unlimited)</span> : null; })()}</p></div>
-<div> <label className="text-xs text-gray-500">Atom</label> <p className="text-sm font-semibold text-gray-800">{(() => { const a = atoms.find(x=>x.code===s.atom); return a ? `${a.code} — ${a.name}` : s.atom; })()}</p></div>
-<div> <label className="text-xs text-gray-500">Cost Centre</label> <p className="text-sm font-semibold text-gray-800">{(() => { const c = costCentres.find(x=>x.code===s.costCentre); return c ? `${c.code} — ${c.name}` : s.costCentre; })()}</p></div>
-<div> <label className="text-xs text-gray-500">Region</label> <p className="text-sm font-semibold text-gray-800">{(() => { const r = regions.find(x=>x.code===s.region); return r ? `${r.code} — ${r.name}` : s.region||'—'; })()}</p></div>
-<div> <label className="text-xs text-gray-500">Project</label> <p className="text-sm font-semibold text-gray-800">{s.project || '—'}</p></div>
-<div className="col-span-2 md:col-span-3"> <label className="text-xs text-gray-500">Description</label> <p className="text-sm text-gray-800">{s.description || '—'}</p></div>
-<div> <label className="text-xs text-gray-500">In Budget</label> <p className="text-sm">{s.inBudget ? <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded font-semibold">Yes</span> : <span className="px-2 py-0.5 bg-red-100 text-red-700 text-xs rounded font-semibold">No</span>}</p></div>
-<div> <label className="text-xs text-gray-500">Exceptional Item</label> <p className="text-sm font-semibold text-gray-800">{s.exceptional}</p></div>
-<div> <label className="text-xs text-gray-500">Time-sensitive</label> <p className="text-sm">{s.timeSensitive ? <span className="px-2 py-0.5 bg-orange-100 text-orange-700 text-xs rounded font-semibold">Yes - Urgent</span> : 'No'}</p></div>
+<div className="bg-white rounded-lg shadow p-4"> <h2 className="text-lg font-bold text-gray-800 mb-3">Spend Details</h2> {(() => { const ed = editingSpend; const efc = "w-full px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"; const upd = (k,v) => setEditingSpend(prev => ({...prev, [k]:v})); return (<div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+<div> <label className="text-xs text-gray-500">Requested Amount</label> {ed ? <input type="number" value={ed.amount} onChange={e => upd('amount',e.target.value)} className={efc}/> : <p className="text-lg font-bold text-green-600">{fmtEur(s.amount, s.currency)}{s.currency !== 'EUR' && <span className="text-xs text-gray-400 ml-1">({s.currency} {Number(s.amount).toLocaleString()})</span>}</p>}</div>
+<div> <label className="text-xs text-gray-500">Vendor / Supplier</label> {ed ? <input value={ed.vendor} onChange={e => upd('vendor',e.target.value)} className={efc}/> : <p className="text-sm font-semibold text-gray-800">{s.vendor}</p>}</div>
+<div> <label className="text-xs text-gray-500">Spend Category</label> {ed ? <select value={ed.category} onChange={e => upd('category',e.target.value)} className={efc}><option value="">Select...</option>{categories.filter(c=>c.active).map(c=>(<option key={c.id} value={c.name}>{c.name}</option>))}</select> : <p className="text-sm font-semibold text-gray-800">{s.category}</p>}</div>
+<div> <label className="text-xs text-gray-500">Function / Department</label> {ed ? <select value={ed.department} onChange={e => { upd('department',e.target.value); const fn = functions.find(f=>f.name===e.target.value); if (fn) { upd('approver',fn.approver); upd('approverId',fn.approverId); } }} className={efc}><option value="">Select...</option>{functions.filter(f=>f.active).map(f=>(<option key={f.id} value={f.name}>{f.name}</option>))}</select> : <p className="text-sm font-semibold text-gray-800">{s.department || '—'}</p>}</div>
+<div> <label className="text-xs text-gray-500">Business Unit</label> {ed ? <select value={ed.businessUnit||''} onChange={e => upd('businessUnit',e.target.value)} className={efc}><option value="">Select...</option>{businessUnits.filter(bu=>bu.active).map(bu=>(<option key={bu.id} value={bu.name}>{bu.name}</option>))}</select> : <p className="text-sm font-semibold text-gray-800">{s.businessUnit || '—'}</p>}</div>
+<div> <label className="text-xs text-gray-500">Approver</label> <p className="text-sm font-semibold text-gray-800">{(ed ? ed.approver : s.approver) || '—'} {(() => { const au = mockUsers.find(u=>u.name===(ed ? ed.approver : s.approver)); return au && au.approvalLimit > 0 ? <span className="text-xs text-gray-400">(€{au.approvalLimit.toLocaleString()})</span> : au?.isCeo ? <span className="text-xs text-gray-400">(unlimited)</span> : null; })()}</p></div>
+<div> <label className="text-xs text-gray-500">Atom</label> {ed ? <select value={ed.atom||''} onChange={e => upd('atom',e.target.value)} className={efc}><option value="">Select...</option>{atoms.filter(a=>a.active).map(a=>(<option key={a.id} value={a.code}>{a.code} — {a.name}</option>))}</select> : <p className="text-sm font-semibold text-gray-800">{(() => { const a = atoms.find(x=>x.code===s.atom); return a ? `${a.code} — ${a.name}` : s.atom; })()}</p>}</div>
+<div> <label className="text-xs text-gray-500">Cost Centre</label> {ed ? <select value={ed.costCentre||''} onChange={e => upd('costCentre',e.target.value)} className={efc}><option value="">Select...</option>{costCentres.filter(c=>c.active).map(c=>(<option key={c.id} value={c.code}>{c.code} — {c.name}</option>))}</select> : <p className="text-sm font-semibold text-gray-800">{(() => { const c = costCentres.find(x=>x.code===s.costCentre); return c ? `${c.code} — ${c.name}` : s.costCentre; })()}</p>}</div>
+<div> <label className="text-xs text-gray-500">Region</label> {ed ? <select value={ed.region||''} onChange={e => upd('region',e.target.value)} className={efc}><option value="">Select...</option>{regions.filter(r=>r.active).map(r=>(<option key={r.id} value={r.code}>{r.code} — {r.name}</option>))}</select> : <p className="text-sm font-semibold text-gray-800">{(() => { const r = regions.find(x=>x.code===s.region); return r ? `${r.code} — ${r.name}` : s.region||'—'; })()}</p>}</div>
+<div> <label className="text-xs text-gray-500">Project</label> {ed ? <select value={ed.project||''} onChange={e => upd('project',e.target.value)} className={efc}><option value="">Select...</option>{projects.filter(p=>p.active).map(p=>(<option key={p.id} value={p.name}>{p.name}</option>))}</select> : <p className="text-sm font-semibold text-gray-800">{s.project || '—'}</p>}</div>
+<div className="col-span-2 md:col-span-3"> <label className="text-xs text-gray-500">Description</label> {ed ? <textarea value={ed.description||''} onChange={e => upd('description',e.target.value)} rows={2} className={efc + " resize-none"}/> : <p className="text-sm text-gray-800">{s.description || '—'}</p>}</div>
+<div> <label className="text-xs text-gray-500">In Budget</label> {ed ? <label className="flex items-center space-x-2 cursor-pointer mt-1"><input type="checkbox" checked={ed.inBudget||false} onChange={e => upd('inBudget',e.target.checked)} className="w-4 h-4 text-green-600 rounded"/><span className="text-sm text-gray-700">{ed.inBudget ? 'Yes' : 'No'}</span></label> : <p className="text-sm">{s.inBudget ? <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded font-semibold">Yes</span> : <span className="px-2 py-0.5 bg-red-100 text-red-700 text-xs rounded font-semibold">No</span>}</p>}</div>
+<div> <label className="text-xs text-gray-500">Exceptional Item</label> {ed ? <div className="flex items-center gap-3 mt-1"><label className="flex items-center space-x-1 cursor-pointer"><input type="radio" name="editExceptional" value="Yes" checked={ed.exceptional==='Yes'} onChange={e => upd('exceptional',e.target.value)} className="w-4 h-4 text-green-600"/><span className="text-sm text-gray-700">Yes</span></label><label className="flex items-center space-x-1 cursor-pointer"><input type="radio" name="editExceptional" value="No" checked={ed.exceptional==='No'} onChange={e => upd('exceptional',e.target.value)} className="w-4 h-4 text-green-600"/><span className="text-sm text-gray-700">No</span></label></div> : <p className="text-sm font-semibold text-gray-800">{s.exceptional}</p>}</div>
+<div> <label className="text-xs text-gray-500">Time-sensitive</label> {ed ? <label className="flex items-center space-x-2 cursor-pointer mt-1"><input type="checkbox" checked={ed.timeSensitive||false} onChange={e => upd('timeSensitive',e.target.checked)} className="w-4 h-4 text-orange-600 rounded"/><span className="text-sm text-gray-700">{ed.timeSensitive ? 'Yes - Urgent' : 'No'}</span></label> : <p className="text-sm">{s.timeSensitive ? <span className="px-2 py-0.5 bg-orange-100 text-orange-700 text-xs rounded font-semibold">Yes - Urgent</span> : 'No'}</p>}</div>
 <div> <label className="text-xs text-gray-500">Submitted</label> <p className="text-sm text-gray-800">{s.submittedBy} — {new Date(s.submittedAt).toLocaleDateString('en-GB', {day:'numeric',month:'short',year:'numeric'})}</p></div>
-{s.originInvoiceId && (() => { const originInv = invoices.find(i => i.id === s.originInvoiceId); return originInv ? <div> <label className="text-xs text-gray-500">Origin Invoice</label> <p className="text-sm font-medium text-indigo-600">{originInv.invoiceNumber} — {originInv.vendor}</p></div> : null; })()}
-</div>
-{s.justification && (<div className="mt-3 pt-3 border-t border-gray-100"> <label className="text-xs text-gray-500">Business Justification</label> <p className="text-sm text-gray-800 mt-1">{s.justification}</p></div>)}</div>
+{s.originInvoiceIds && s.originInvoiceIds.length > 0 && (() => { const originInvs = s.originInvoiceIds.map(oid => invoices.find(i => i.id === oid)).filter(Boolean); return originInvs.length > 0 ? <div> <label className="text-xs text-gray-500">Origin Invoice{originInvs.length > 1 ? 's' : ''}</label> {originInvs.map(inv => <p key={inv.id} className="text-sm font-medium text-indigo-600">{inv.invoiceNumber} — {inv.vendor}</p>)}</div> : null; })()}
+</div>); })()}
+{(s.justification || editingSpend) && (<div className="mt-3 pt-3 border-t border-gray-100"> <label className="text-xs text-gray-500">Business Justification</label> {editingSpend ? <textarea value={editingSpend.justification||''} onChange={e => setEditingSpend(prev => ({...prev, justification:e.target.value}))} rows={4} className="w-full mt-1 px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"/> : <p className="text-sm text-gray-800 mt-1">{s.justification}</p>}</div>)}</div>
 
 {s.status === 'Escalated' && (<div className="p-3 bg-orange-50 border border-orange-200 rounded-lg"><p className="text-sm text-orange-800"><strong>Escalated:</strong> Approved by {s.approvedBy} but exceeds their limit. Awaiting {s.escalatedTo||'CEO'} approval.</p></div>)}
 
@@ -1921,7 +2069,6 @@ return unlinkedBl.length > 0 ? (<div>
 </div> </div>{escalationModal}</div>);}
 if (spendView === 'form') { return (<div className={_pg}><div className="w-full">{navBar}
 <div className="bg-white rounded-lg shadow p-4 mb-4"> <div className="flex items-center justify-between"> <div className="flex items-center space-x-3"> <button onClick={() => setSpendView('list')} className="flex items-center space-x-1 text-indigo-600 hover:text-indigo-800 text-sm font-medium">← Back</button> <span className="text-gray-300">|</span> <h1 className="text-xl font-bold text-gray-800">New Spend Approval</h1> <span className="text-xs text-gray-500">Required fields marked <span className="text-red-500">*</span></span></div> <div className="flex items-center space-x-2"><button onClick={submitSpend} className="px-5 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold text-sm">Submit</button><button onClick={() => setSpendView('list')} className="px-4 py-1.5 text-gray-600 hover:text-gray-800 font-semibold text-sm">Cancel</button></div></div></div>
-{sf.originInvoiceId && (() => { const originInv = invoices.find(i => i.id === sf.originInvoiceId); return originInv ? (<div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center space-x-2"><AlertCircle className="w-5 h-5 text-blue-600 flex-shrink-0"/><p className="text-sm text-blue-800">Created from invoice <strong>{originInv.invoiceNumber}</strong> ({originInv.vendor}). Invoice will be linked automatically on submission.</p></div>) : null; })()}
 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
 {/* Left column: form fields */}
@@ -1947,8 +2094,15 @@ if (spendView === 'form') { return (<div className={_pg}><div className="w-full"
 <div className="mt-4"><label className={slc}>Business Justification {req}</label><textarea value={sf.justification} onChange={e => updateSpend('justification',e.target.value)} rows={6} placeholder="Business justification..." className={sfc + " resize-none"}/></div>
 </div>
 
-{/* Right column: budget lines + attachments */}
+{/* Right column: linked invoices + budget lines + attachments */}
 <div className="space-y-4">
+{sf.originInvoiceIds && sf.originInvoiceIds.length > 0 && (() => { const originInvs = sf.originInvoiceIds.map(oid => invoices.find(i => i.id === oid)).filter(Boolean); if (originInvs.length === 0) return null; const totalInvoicedEur = originInvs.reduce((sum,i) => sum + toEur(invoiceTotal(i), i.currency||sf.currency), 0); const approvedEur = toEur(parseFloat(sf.amount)||0, sf.currency); const remainingEur = approvedEur - totalInvoicedEur; return (<div className="bg-white rounded-lg shadow p-4"> <h2 className="text-lg font-bold text-gray-800 mb-3">Linked Invoices</h2>
+<div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm"><span className="text-gray-600">Amount: <strong>{fmtEur(sf.amount, sf.currency)}</strong></span><span className="text-gray-600">Invoiced: <strong>€{totalInvoicedEur.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</strong></span><span className={remainingEur < 0 ? 'text-red-600 font-semibold' : 'text-green-600 font-semibold'}>Remaining: €{remainingEur.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
+<div className="w-full bg-gray-200 rounded-full h-2 mb-3"><div className={`h-2 rounded-full ${remainingEur < 0 ? 'bg-red-500' : 'bg-green-500'}`} style={{width:`${Math.min(100,totalInvoicedEur/approvedEur*100)}%`}}></div></div>
+<div className="space-y-2">{originInvs.map(inv => (<div key={inv.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border"><div><span className="font-medium text-gray-800">{inv.invoiceNumber}</span><span className="text-sm text-gray-500 ml-2">{inv.vendor} • {currencySymbol(inv.currency)}{invoiceTotal(inv).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}{inv.currency !== 'EUR' && ` (€${toEur(invoiceTotal(inv), inv.currency).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})})`}</span></div>
+<button onClick={() => { setSpendForm(prev => ({...prev, originInvoiceIds: prev.originInvoiceIds.filter(id => id !== inv.id)})); setSelectedInvoiceIds(prev => prev.filter(id => id !== inv.id)); }} className="text-red-500 hover:text-red-700 text-xs font-semibold">Remove</button></div>))}</div>
+<p className="mt-2 text-xs text-gray-500">{originInvs.length === 1 ? 'Invoice' : 'Invoices'} will be linked automatically on submission.</p>
+</div>); })()}
 {sf.inBudget && (<div className="bg-white rounded-lg shadow p-4">
 <label className={slc}>Link Budget Lines</label>
 <select value={spendLinkBudgetId || ''} onChange={e => { setSpendLinkBudgetId(e.target.value ? Number(e.target.value) : null); setSpendLinkBlSearch(''); }} className={`w-full mb-2 ${sfc}`}><option value="">Select a budget...</option>{budgets.filter(b => b.status === 'Submitted').map(b => (<option key={b.id} value={b.id}>{b.title} — {b.function?.name || ''} ({b.year})</option>))}</select>
@@ -2003,16 +2157,27 @@ return (<div className={_pg}><div className="w-full">{navBar}
 <button onClick={() => setShowSpendColSelector(!showSpendColSelector)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300" >Columns</button> {showSpendColSelector && (<div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-xl border border-gray-200 p-4 z-10"> <h3 className="font-semibold text-gray-800 mb-3">Show/Hide Columns</h3> <div className="space-y-2">
 {Object.entries({ref:'Reference',title:'Title',vendor:'Vendor',amount:'Amount',invoiced:'Invoiced',category:'Category',department:'Function',businessUnit:'Business Unit',project:'Project',submittedBy:'Submitted By',date:'Date',status:'Status',approver:'Approver',region:'Region',costCentre:'Cost Centre',atom:'Atom'}).map(([k,label])=>(<label key={k} className="flex items-center space-x-2 cursor-pointer"><input type="checkbox" checked={spendVisibleCols[k]} onChange={() => toggleSpendCol(k)} className="w-4 h-4 text-green-600 rounded"/><span className="text-sm text-gray-700">{label}</span></label>))} </div></div>)}</div></div></div>
 <div className={_fj+" mb-4"}> <span className="text-sm text-gray-500">{filteredSpends.length} of {spendApprovals.length} requests</span> <div className="flex items-center space-x-3">
-{canCreateSpend() && <button onClick={() => { setSpendForm({ cc:'', title:'', currency:'', approver:'', approverId:null, amount:'', category:'', atom:'', vendor:'', costCentre:'', region:'', project:'', description:'', timeSensitive:false, inBudget:false, exceptional:'', justification:'', department:'', businessUnit:'', originInvoiceId: null }); setSpendView('form'); }} className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold text-sm"><DollarSign className="w-4 h-4"/><span>Create Spend Approval</span></button>}
+{canCreateSpend() && <button onClick={() => { setSpendForm({ cc:'', title:'', currency:'', approver:'', approverId:null, amount:'', category:'', atom:'', vendor:'', costCentre:'', region:'', project:'', description:'', timeSensitive:false, inBudget:false, exceptional:'', justification:'', department:'', businessUnit:'', originInvoiceIds: [] }); setSpendView('form'); }} className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold text-sm"><DollarSign className="w-4 h-4"/><span>Create Spend Approval</span></button>}
 {canAssignInvoices() && <button onClick={runAutoMatch} className="flex items-center space-x-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-semibold text-sm"><ExternalLink className="w-4 h-4"/><span>Match Invoices</span></button>}
 {canManageBudgets() && <button onClick={runBudgetMatch} className="flex items-center space-x-2 px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition font-semibold text-sm"><Wallet className="w-4 h-4"/><span>Match Budget Items</span></button>}
 {canCreateSpend() && <><input ref={spendBulkFileRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleSpendBulkFile} className="hidden" id="spend-bulk-upload"/>
-<label htmlFor="spend-bulk-upload" className="flex items-center space-x-2 px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 font-semibold cursor-pointer text-sm"><Upload className="w-4 h-4"/><span>Import CSV</span></label></>}
+<label htmlFor="spend-bulk-upload" className="flex items-center space-x-2 px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 font-semibold cursor-pointer text-sm"><Upload className="w-4 h-4"/><span>Import XLSX</span></label></>}
 </div></div>
+{/* Spend Bulk Import - Sheet */}
+{spendBulk.step === 'sheet' && (<div className="bg-green-50 border border-green-200 rounded-lg p-6 mb-6">
+<div className={_fj+" mb-4"}><h3 className="text-xl font-semibold text-gray-800">Select Sheet — {spendBulk.fileName}</h3>
+<button onClick={() => setSpendBulk({ rows: [], fileName: '', mappings: null, step: null })} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Cancel</button>
+</div>
+<p className="text-sm text-gray-600 mb-4">This workbook has multiple sheets. Select which sheet to import from.</p>
+<div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+{spendBulk.sheetNames.map(name => (<button key={name} onClick={() => selectSpendBulkSheet(spendBulk.workbook, name, spendBulk.fileName)} className="px-4 py-3 bg-white border-2 border-green-200 rounded-lg hover:border-green-500 hover:bg-green-50 text-sm font-medium text-gray-800 transition text-left"><FileSpreadsheet className="w-4 h-4 text-green-600 inline mr-2"/>{name}</button>))}
+</div>
+</div>)}
 {/* Spend Bulk Import - Map */}
 {spendBulk.step === 'map' && (<div className="bg-green-50 border border-green-200 rounded-lg p-6 mb-6">
-<div className={_fj+" mb-4"}><h3 className="text-xl font-semibold text-gray-800">Map Columns — {spendBulk.fileName}</h3>
+<div className={_fj+" mb-4"}><h3 className="text-xl font-semibold text-gray-800">Map Columns — {spendBulk.fileName}{spendBulk.selectedSheet ? ` — ${spendBulk.selectedSheet}` : ''}</h3>
 <div className="flex space-x-3">
+{spendBulk.sheetNames?.length > 1 && <button onClick={() => setSpendBulk(prev => ({ ...prev, step: 'sheet' }))} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Back to Sheets</button>}
 <button onClick={() => setSpendBulk({ rows: [], fileName: '', mappings: null, step: null })} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Cancel</button>
 <button onClick={spendBulkPreview} className="px-5 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold">Preview Import</button>
 </div></div>
@@ -2420,7 +2585,7 @@ onClick={handleNotificationOk} className="w-full bg-indigo-600 text-white px-6 p
 <div className="w-full"> <div className="bg-white rounded-lg shadow p-4 mb-4"> <div className="flex items-center justify-between"> <div className="flex items-center space-x-3"> <button
 onClick={() => setSelectedInvoice(null)} className="flex items-center space-x-1 text-indigo-600 hover:text-indigo-800 text-sm font-medium" > <span>←</span> <span>Back</span></button> <span className="text-gray-300">|</span> <h1 className="text-xl font-bold text-gray-800">{invoice.invoiceNumber}</h1> <span className="text-sm text-gray-500">— {invoice.vendor}</span></div> <div className="flex items-center space-x-2"> {canDeleteInvoices() && ( <button
 onClick={() => initiateDeleteInvoice(invoice)} className="flex items-center space-x-1 px-3 py-1.5 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 text-sm" > <Trash2 className="w-3.5 h-3.5"/> <span>Delete</span></button>)}
-{canCreateSpend() && !invoice.spendApprovalId && ( <button onClick={() => { const totalAmount = (parseFloat(invoice.amount) + parseFloat(invoice.taxAmount)).toFixed(2); const fn = functions.find(f => f.name === invoice.department); const inferred = inferLookupsFromDepartment(invoice.department); const invCurrency = (invoice.currency || '').toUpperCase(); if (invCurrency && !currencies.some(c => c.code === invCurrency)) { setCurrencies(prev => [...prev, { id: Date.now(), code: invCurrency, name: invCurrency, active: true }]); } setSpendForm({ cc:'', title: invoice.description, currency: invCurrency, approver: fn ? fn.approver : '', amount: totalAmount, category:'', atom: inferred.atom, vendor: invoice.vendor, costCentre: inferred.costCentre, region:'', project:'', timeSensitive:false, exceptional:'', justification: invoice.description, department: invoice.department, originInvoiceId: invoice.id }); setSelectedInvoice(null); setCurrentPage('spend-approval'); setSpendView('form'); }} className="flex items-center space-x-1 px-3 py-1.5 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 text-sm"><DollarSign className="w-3.5 h-3.5"/><span>Create Spend</span></button>)}
+{canCreateSpend() && !invoice.spendApprovalId && ( <button onClick={() => { const totalAmount = (parseFloat(invoice.amount) + parseFloat(invoice.taxAmount)).toFixed(2); const fn = functions.find(f => f.name === invoice.department); const inferred = inferLookupsFromDepartment(invoice.department); const invCurrency = (invoice.currency || '').toUpperCase(); if (invCurrency && !currencies.some(c => c.code === invCurrency)) { setCurrencies(prev => [...prev, { id: Date.now(), code: invCurrency, name: invCurrency, active: true }]); } setSpendForm({ cc:'', title: invoice.description, currency: invCurrency, approver: fn ? fn.approver : '', amount: totalAmount, category:'', atom: inferred.atom, vendor: invoice.vendor, costCentre: inferred.costCentre, region:'', project:'', timeSensitive:false, exceptional:'', justification: invoice.description, department: invoice.department, originInvoiceIds: [invoice.id] }); setSelectedInvoice(null); setCurrentPage('spend-approval'); setSpendView('form'); }} className="flex items-center space-x-1 px-3 py-1.5 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 text-sm"><DollarSign className="w-3.5 h-3.5"/><span>Create Spend</span></button>)}
 <button onClick={() => setCurrentPage('landing')} className="flex items-center space-x-1 px-3 py-1.5 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200 text-sm"><Home className="w-3.5 h-3.5"/><span>Dashboard</span></button></div></div></div> <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
 {/* Left column: Invoice Info, then Linked Spend Approval + Bank Details */}
@@ -2526,9 +2691,19 @@ onClick={logout} className="flex items-center space-x-2 px-4 py-2 bg-red-100 tex
 </div> {isProcessing && processingProgress.total > 0 && ( <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 mb-6"> <div className="flex items-center justify-between mb-3"> <div className="flex items-center space-x-3"> <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600"></div> <span className="text-gray-700"> Processing invoices... ({processingProgress.current} of {processingProgress.total})</span></div>
 <span className="text-sm font-semibold text-indigo-600"> {Math.round((processingProgress.current / processingProgress.total) * 100)}%</span></div> <div className="w-full bg-gray-200 rounded-full h-2"> <div className="bg-indigo-600 h-2 rounded-full transition-all duration-300"
 style={{ width: `${(processingProgress.current / processingProgress.total) * 100}%` }} ></div></div></div>)}
+{bulkImport.step === 'sheet' && (<div className="bg-teal-50 border border-teal-200 rounded-lg p-6 mb-6">
+<div className={_fj+" mb-4"}><h3 className="text-xl font-semibold text-gray-800">Select Sheet — {bulkImport.fileName}</h3>
+<button onClick={() => setBulkImport({ rows: [], fileName: '', mappings: null, step: null })} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Cancel</button>
+</div>
+<p className="text-sm text-gray-600 mb-4">This workbook has multiple sheets. Select which sheet to import from.</p>
+<div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+{bulkImport.sheetNames.map(name => (<button key={name} onClick={() => selectBulkSheet(bulkImport.workbook, name, bulkImport.fileName)} className="px-4 py-3 bg-white border-2 border-teal-200 rounded-lg hover:border-teal-500 hover:bg-teal-50 text-sm font-medium text-gray-800 transition text-left"><FileSpreadsheet className="w-4 h-4 text-teal-600 inline mr-2"/>{name}</button>))}
+</div>
+</div>)}
 {bulkImport.step === 'map' && (<div className="bg-teal-50 border border-teal-200 rounded-lg p-6 mb-6">
-<div className={_fj+" mb-4"}><h3 className="text-xl font-semibold text-gray-800">Map Columns — {bulkImport.fileName}</h3>
+<div className={_fj+" mb-4"}><h3 className="text-xl font-semibold text-gray-800">Map Columns — {bulkImport.fileName}{bulkImport.selectedSheet ? ` — ${bulkImport.selectedSheet}` : ''}</h3>
 <div className="flex space-x-3">
+{bulkImport.sheetNames?.length > 1 && <button onClick={() => setBulkImport(prev => ({ ...prev, step: 'sheet' }))} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Back to Sheets</button>}
 <button onClick={() => setBulkImport({ rows: [], fileName: '', mappings: null, step: null })} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Cancel</button>
 <button onClick={bulkImportPreview} className="px-5 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 text-sm font-semibold">Preview Import</button>
 </div></div>
@@ -2672,10 +2847,13 @@ checked={visibleColumns.dueDate}
 onChange={() => toggleColumnVisibility('dueDate')} className="w-4 h-4 text-indigo-600 rounded"/> <span className="text-sm text-gray-700">Due Date</span></label> <label className="flex items-center space-x-2 cursor-pointer"> <input type="checkbox"
 checked={visibleColumns.submittedBy}
 onChange={() => toggleColumnVisibility('submittedBy')} className="w-4 h-4 text-indigo-600 rounded"/> <span className="text-sm text-gray-700">Submitted By</span></label></div></div>)}</div> {invoices.length > 0 && ( <button
-onClick={exportToExcel} className="flex items-center space-x-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700"  > <Download className="w-4 h-4"/> <span>Export</span></button>)}</div></div> {invoices.length === 0 ? ( <div className="text-center py-12 text-gray-500"> <AlertCircle className="w-12 h-12 mx-auto mb-4 text-gray-400"/> <p>No invoices processed yet. Upload an invoice to get started.</p></div> ) : getFilteredInvoices().length === 0 ? ( <div className="text-center py-12 text-gray-500">
+onClick={exportToExcel} className="flex items-center space-x-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700"  > <Download className="w-4 h-4"/> <span>Export</span></button>)}</div></div>
+{selectedInvoiceIds.length > 0 && canCreateSpend() && (<div className="flex items-center justify-between p-3 bg-indigo-50 border border-indigo-200 rounded-lg mb-4"><div className="flex items-center space-x-3"><span className="text-sm font-semibold text-indigo-800">{selectedInvoiceIds.length} invoice{selectedInvoiceIds.length !== 1 ? 's' : ''} selected</span><button onClick={() => setSelectedInvoiceIds([])} className="text-xs text-indigo-600 hover:text-indigo-800 underline">Clear</button></div><button onClick={() => { const selected = invoices.filter(i => selectedInvoiceIds.includes(i.id)); const totalAmount = selected.reduce((sum, inv) => sum + parseFloat(inv.amount) + parseFloat(inv.taxAmount), 0).toFixed(2); const vendors = [...new Set(selected.map(i => i.vendor))]; const depts = [...new Set(selected.map(i => i.department).filter(Boolean))]; const dept = depts.length === 1 ? depts[0] : ''; const fn = dept ? functions.find(f => f.name === dept) : null; const inferred = dept ? inferLookupsFromDepartment(dept) : { atom: '', costCentre: '' }; const invCurrencies = [...new Set(selected.map(i => (i.currency || '').toUpperCase()).filter(Boolean))]; const currency = invCurrencies.length === 1 ? invCurrencies[0] : ''; if (currency && !currencies.some(c => c.code === currency)) { setCurrencies(prev => [...prev, { id: Date.now(), code: currency, name: currency, active: true }]); } const descriptions = selected.map(i => i.description).filter(Boolean); setSpendForm({ cc:'', title: vendors.length === 1 ? `${vendors[0]} — ${selected.length} invoices` : `${selected.length} invoices — multiple vendors`, currency, approver: fn ? fn.approver : '', amount: totalAmount, category:'', atom: inferred.atom, vendor: vendors.length === 1 ? vendors[0] : vendors.join(', '), costCentre: inferred.costCentre, region:'', project:'', description: descriptions.join('; '), timeSensitive:false, exceptional:'', justification: descriptions.join('; ') || `Spend for ${selected.length} invoices`, department: dept, businessUnit:'', originInvoiceIds: selectedInvoiceIds.slice() }); setCurrentPage('spend-approval'); setSpendView('form'); }} className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold text-sm"><DollarSign className="w-4 h-4"/><span>Create Spend Approval</span></button></div>)}
+{invoices.length === 0 ? ( <div className="text-center py-12 text-gray-500"> <AlertCircle className="w-12 h-12 mx-auto mb-4 text-gray-400"/> <p>No invoices processed yet. Upload an invoice to get started.</p></div> ) : getFilteredInvoices().length === 0 ? ( <div className="text-center py-12 text-gray-500">
 <AlertCircle className="w-12 h-12 mx-auto mb-4 text-gray-400"/> <p>No invoices match your current filters.</p> <button
 onClick={clearFilters} className="mt-4 text-indigo-600 hover:text-indigo-800 underline" > Clear Filters</button></div> ) : ( <div className="space-y-6"> {Object.entries(getGroupedInvoices()).map(([groupName, groupInvoices]) => ( <div key={groupName}> {groupBy !== 'none' && ( <div className="mb-3 flex items-center justify-between"> <h3 className="text-lg font-bold text-gray-700 flex items-center space-x-2"> <span>{groupName}</span> <span className="text-sm font-normal text-gray-500">({groupInvoices.length} invoices)</span></h3></div>)}
 <div className="overflow-x-auto"> <table className="w-full"> <thead className="bg-gray-50"> <tr>
+{canCreateSpend() && <th className="px-4 py-3 text-center w-10"><input type="checkbox" checked={(() => { const unlinkable = groupInvoices.filter(i => !i.spendApprovalId); return unlinkable.length > 0 && unlinkable.every(i => selectedInvoiceIds.includes(i.id)); })()} onChange={(e) => { const unlinkable = groupInvoices.filter(i => !i.spendApprovalId); if (e.target.checked) { setSelectedInvoiceIds(prev => [...new Set([...prev, ...unlinkable.map(i => i.id)])]); } else { const unlinkIds = new Set(unlinkable.map(i => i.id)); setSelectedInvoiceIds(prev => prev.filter(id => !unlinkIds.has(id))); } }} className="w-4 h-4 text-indigo-600 rounded"/></th>}
 {visibleColumns.invoiceNumber && ( <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Invoice #</th>)}
 {visibleColumns.vendor && ( <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Vendor</th>)}
 {visibleColumns.businessUnit && ( <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Business Unit</th>)}
@@ -2687,7 +2865,8 @@ onClick={clearFilters} className="mt-4 text-indigo-600 hover:text-indigo-800 und
 {visibleColumns.dueDate && ( <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Due Date</th>)}
 {visibleColumns.file && ( <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">File</th>)}
 {visibleColumns.submittedBy && ( <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Submitted By</th>)}
-{canDeleteInvoices() && ( <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Actions</th>)}</tr></thead> <tbody className="divide-y divide-gray-200"> {groupInvoices.map((invoice) => ( <tr key={invoice.id} className="hover:bg-gray-50">
+{canDeleteInvoices() && ( <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Actions</th>)}</tr></thead> <tbody className="divide-y divide-gray-200"> {groupInvoices.map((invoice) => ( <tr key={invoice.id} className={`hover:bg-gray-50 ${selectedInvoiceIds.includes(invoice.id) ? 'bg-indigo-50' : ''}`}>
+{canCreateSpend() && <td className="px-4 py-3 text-center">{!invoice.spendApprovalId ? (<input type="checkbox" checked={selectedInvoiceIds.includes(invoice.id)} onChange={(e) => { if (e.target.checked) { setSelectedInvoiceIds(prev => [...prev, invoice.id]); } else { setSelectedInvoiceIds(prev => prev.filter(id => id !== invoice.id)); } }} className="w-4 h-4 text-indigo-600 rounded"/>) : <span className="text-gray-300">—</span>}</td>}
 {visibleColumns.invoiceNumber && ( <td className="px-4 py-3 text-sm"> <button
 onClick={() => setSelectedInvoice(invoice)} className="text-indigo-600 hover:text-indigo-800 font-semibold underline" > {invoice.invoiceNumber}</button></td>)}
 {visibleColumns.vendor && ( <td className="px-4 py-3 text-sm">{invoice.vendor}</td>)}

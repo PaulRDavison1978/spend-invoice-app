@@ -2,6 +2,7 @@ import { Router } from 'express';
 import prisma from '../lib/prisma.js';
 import { logAudit } from '../services/auditService.js';
 import { sendTemplateEmail } from '../services/emailService.js';
+import authorize from '../middleware/authorize.js';
 
 const router = Router();
 
@@ -109,16 +110,16 @@ router.get('/api/spend-approvals/:id', async (req, res, next) => {
 });
 
 // PUT /api/spend-approvals/:id
-router.put('/api/spend-approvals/:id', async (req, res, next) => {
+router.put('/api/spend-approvals/:id', authorize('spend.edit'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
     const existing = await prisma.spendApproval.findUnique({ where: { id }, include: { approver: { select: { id: true, name: true, email: true } } } });
     if (!existing) return res.status(404).json({ error: 'Spend approval not found' });
-    if (existing.status !== 'Pending') return res.status(400).json({ error: 'Only pending spend approvals can be updated' });
 
     const {
       title, amount, vendor, category, ccRecipients, justification,
       costCentre, atom, region, project, exceptional, timeSensitive, department, currency,
+      businessUnit, description, inBudget,
     } = req.body;
 
     const updated = await prisma.spendApproval.update({
@@ -138,12 +139,20 @@ router.put('/api/spend-approvals/:id', async (req, res, next) => {
         ...(timeSensitive !== undefined && { timeSensitive }),
         ...(department !== undefined && { department }),
         ...(currency !== undefined && { currency }),
+        ...(businessUnit !== undefined && { businessUnit }),
+        ...(description !== undefined && { description }),
+        ...(inBudget !== undefined && { inBudget }),
       },
       include: { approver: { select: { id: true, name: true, email: true } } },
     });
 
     const performedBy = req.user?.name || 'System';
-    await logAudit({ action: 'SPEND_UPDATED', details: `Spend approval "${updated.title}" (${updated.ref}) updated`, performedBy, userId: req.user?.id });
+    const changedFields = [];
+    const trackFields = { title, amount, vendor, category, costCentre, atom, region, project, exceptional, timeSensitive, department, currency, businessUnit, description, inBudget, ccRecipients, justification };
+    for (const [key, val] of Object.entries(trackFields)) {
+      if (val !== undefined && String(val) !== String(existing[key] ?? '')) changedFields.push(key);
+    }
+    await logAudit({ action: 'SPEND_UPDATED', details: `Spend approval "${updated.title}" (${updated.ref}) updated — fields changed: ${changedFields.length > 0 ? changedFields.join(', ') : 'none'}`, performedBy, userId: req.user?.id });
 
     // Notify approver + CC of changes (fire-and-forget)
     const ccEmails = updated.ccRecipients ? updated.ccRecipients.split(',').map(e => e.trim()).filter(Boolean) : [];
