@@ -68,10 +68,10 @@ export default function auth(req, res, next) {
 }
 
 async function handleDevToken(token, req, res, next) {
-  const email = token.substring(4); // strip "dev:"
+  const email = token.substring(4).toLowerCase(); // strip "dev:"
   try {
-    const user = await prisma.user.findUnique({
-      where: { email },
+    const user = await prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
       include: {
         role: {
           include: {

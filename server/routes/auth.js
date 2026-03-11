@@ -11,9 +11,9 @@ publicRouter.post('/api/auth/callback', async (req, res, next) => {
     const { email, oid, tid, name } = req.body;
     if (!email || !oid) return res.status(400).json({ error: 'email and oid are required' });
 
-    // Look up user by email
-    let user = await prisma.user.findUnique({
-      where: { email: email.toLowerCase() },
+    // Look up user by email (case-insensitive)
+    let user = await prisma.user.findFirst({
+      where: { email: { equals: email.toLowerCase(), mode: 'insensitive' } },
       include: {
         role: {
           include: { permissions: { include: { permission: true } } },
@@ -93,8 +93,8 @@ publicRouter.post('/api/auth/dev-login', async (req, res, next) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: 'email is required' });
 
-    const user = await prisma.user.findUnique({
-      where: { email: email.toLowerCase() },
+    const user = await prisma.user.findFirst({
+      where: { email: { equals: email.toLowerCase(), mode: 'insensitive' } },
       include: {
         role: {
           include: { permissions: { include: { permission: true } } },
