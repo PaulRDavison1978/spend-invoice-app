@@ -2,6 +2,8 @@ import 'dotenv/config';
 
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import extractInvoiceRouter from './routes/extract-invoice.js';
 import { publicRouter as authPublicRouter, protectedRouter as authProtectedRouter } from './routes/auth.js';
 import invoicesRouter from './routes/invoices.js';
@@ -22,13 +24,62 @@ import errorHandler from './middleware/errorHandler.js';
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      frameSrc: ["'self'", "blob:"],
+      connectSrc: ["'self'", "https://login.microsoftonline.com"],
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+    },
+  },
+}));
+app.use(cors({
+  origin: process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',')
+    : ['http://localhost:3000', 'http://localhost:5173'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+app.use(express.json({ limit: '10mb' }));
+
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 500,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use(generalLimiter);
 
 // Public routes (no auth required)
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// Rate-limit auth endpoints more strictly
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/auth', authLimiter);
+
+// Rate-limit extract-invoice endpoints more strictly
+const extractLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/extract-invoice', extractLimiter);
 
 // Auth callback + dev endpoints are public (used during login flow)
 app.use(authPublicRouter);

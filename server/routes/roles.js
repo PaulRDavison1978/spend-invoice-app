@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import prisma from '../lib/prisma.js';
 import { logAudit } from '../services/auditService.js';
+import authorize from '../middleware/authorize.js';
 
 const router = Router();
 
 // GET /api/roles
-router.get('/api/roles', async (req, res, next) => {
+router.get('/api/roles', authorize('settings.manage_users'), async (req, res, next) => {
   try {
     const roles = await prisma.role.findMany({
       include: {
@@ -29,7 +30,7 @@ router.get('/api/roles', async (req, res, next) => {
 });
 
 // POST /api/roles
-router.post('/api/roles', async (req, res, next) => {
+router.post('/api/roles', authorize('settings.manage_users'), async (req, res, next) => {
   try {
     const { name, permissions = [] } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });
@@ -52,7 +53,7 @@ router.post('/api/roles', async (req, res, next) => {
 });
 
 // PATCH /api/roles/:id
-router.patch('/api/roles/:id', async (req, res, next) => {
+router.patch('/api/roles/:id', authorize('settings.manage_users'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
     const { name, permissions } = req.body;
@@ -82,7 +83,7 @@ router.patch('/api/roles/:id', async (req, res, next) => {
 });
 
 // DELETE /api/roles/:id
-router.delete('/api/roles/:id', async (req, res, next) => {
+router.delete('/api/roles/:id', authorize('settings.manage_users'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
     const role = await prisma.role.findUnique({ where: { id } });
@@ -103,7 +104,7 @@ router.delete('/api/roles/:id', async (req, res, next) => {
 });
 
 // GET /api/permissions
-router.get('/api/permissions', async (req, res, next) => {
+router.get('/api/permissions', authorize('settings.manage_users'), async (req, res, next) => {
   try {
     const permissions = await prisma.permission.findMany({ orderBy: { id: 'asc' } });
     res.json(permissions);

@@ -49,12 +49,18 @@ router.get('/api/budgets', authorize('budget.manage_all', 'budget.manage_own'), 
 
     const result = budgets.map(b => {
       const totalEurAnnual = b.lineItems.reduce((sum, li) => sum + (parseFloat(li.eurAnnual) || 0), 0);
-      const totalSpent = b.lineItems.reduce((sum, li) => sum + (li.spendApprovalId ? (invoiceTotals[li.spendApprovalId] || 0) : 0), 0);
+      const linkedItems = b.lineItems.filter(li => li.spendApprovalId);
+      const totalSpent = linkedItems.reduce((sum, li) => sum + (invoiceTotals[li.spendApprovalId] || 0), 0);
+      const linkedSpendTotal = linkedItems.reduce((sum, li) => sum + (parseFloat(li.eurAnnual) || 0), 0);
       return {
         ...b,
         totalEurAnnual,
         totalSpent,
         lineItemCount: b.lineItems.length,
+        linkedCount: linkedItems.length,
+        unlinkedCount: b.lineItems.length - linkedItems.length,
+        linkedSpendTotal,
+        variance: totalEurAnnual - totalSpent,
         lineItems: undefined,
       };
     });
@@ -72,14 +78,46 @@ router.get('/api/budgets/:id', authorize('budget.manage_all', 'budget.manage_own
         function: { select: { id: true, name: true } },
         createdBy: { select: { id: true, name: true } },
         lineItems: {
-          include: { spendApproval: { select: { id: true, ref: true, title: true } } },
+          include: {
+            spendApproval: {
+              select: {
+                id: true, ref: true, title: true, currency: true, amount: true,
+                invoices: {
+                  select: { id: true, amount: true, taxAmount: true, date: true, currency: true, monthlyCosts: true },
+                },
+              },
+            },
+          },
           orderBy: { id: 'asc' },
         },
       },
     });
     if (!budget) return res.status(404).json({ error: 'Budget not found' });
     if (!await canAccessBudget(req, budget)) return res.status(403).json({ error: 'Access denied' });
-    res.json(budget);
+
+    // Find approved SAs NOT linked to any budget line item in this budget (out-of-budget / inflation)
+    const linkedSaIds = budget.lineItems
+      .filter(li => li.spendApprovalId)
+      .map(li => li.spendApprovalId);
+
+    const unbudgetedSAs = await prisma.spendApproval.findMany({
+      where: {
+        status: { in: ['Approved', 'Partially Invoiced', 'Fully Invoiced'] },
+        inBudget: false,
+        id: { notIn: linkedSaIds.length > 0 ? linkedSaIds : [0] },
+      },
+      select: {
+        id: true, ref: true, title: true, vendor: true, category: true,
+        currency: true, amount: true, businessUnit: true, costCentre: true,
+        region: true, status: true, submittedAt: true,
+        invoices: {
+          select: { id: true, amount: true, taxAmount: true, date: true, currency: true, monthlyCosts: true },
+        },
+      },
+      orderBy: { submittedAt: 'desc' },
+    });
+
+    res.json({ ...budget, unbudgetedSAs });
   } catch (err) { next(err); }
 });
 
@@ -217,12 +255,15 @@ router.patch('/api/budgets/:budgetId/line-items/:lineId', authorize('budget.mana
   try {
     const budget = await prisma.budget.findUnique({ where: { id: parseInt(req.params.budgetId) } });
     if (!budget) return res.status(404).json({ error: 'Budget not found' });
-    if (budget.status !== 'Draft') return res.status(400).json({ error: 'Cannot edit lines in a submitted budget' });
     if (!await canAccessBudget(req, budget)) return res.status(403).json({ error: 'Access denied' });
 
     const lineId = parseInt(req.params.lineId);
     const existing = await prisma.budgetLineItem.findUnique({ where: { id: lineId } });
     if (!existing || existing.budgetId !== budget.id) return res.status(404).json({ error: 'Line item not found in this budget' });
+
+    // Allow spendApprovalId linking on any status; other edits require Draft
+    const onlyLinkingSA = Object.keys(req.body).length === 1 && req.body.spendApprovalId !== undefined;
+    if (budget.status !== 'Draft' && !onlyLinkingSA) return res.status(400).json({ error: 'Cannot edit lines in a submitted budget' });
 
     const data = {};
     const fields = ['type','department','businessUnit','serviceCategory','licence','project','costCentre','comments','region','vendor','contractEndDate','currency','monthlyBudget','spendApprovalId'];

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import prisma from '../lib/prisma.js';
 import { logAudit } from '../services/auditService.js';
+import authorize from '../middleware/authorize.js';
 
 const router = Router();
 
@@ -22,7 +23,7 @@ function getDelegate(type) {
 }
 
 // GET /api/lookups/:type
-router.get('/api/lookups/:type', async (req, res, next) => {
+router.get('/api/lookups/:type', authorize('settings.view_lookups', 'settings.manage_lookups'), async (req, res, next) => {
   try {
     const result = getDelegate(req.params.type);
     if (!result) return res.status(400).json({ error: `Unknown lookup type: ${req.params.type}` });
@@ -37,7 +38,7 @@ router.get('/api/lookups/:type', async (req, res, next) => {
 });
 
 // POST /api/lookups/:type
-router.post('/api/lookups/:type', async (req, res, next) => {
+router.post('/api/lookups/:type', authorize('settings.manage_lookups'), async (req, res, next) => {
   try {
     const result = getDelegate(req.params.type);
     if (!result) return res.status(400).json({ error: `Unknown lookup type: ${req.params.type}` });
@@ -63,7 +64,7 @@ router.post('/api/lookups/:type', async (req, res, next) => {
 });
 
 // PATCH /api/lookups/:type/:id
-router.patch('/api/lookups/:type/:id', async (req, res, next) => {
+router.patch('/api/lookups/:type/:id', authorize('settings.manage_lookups'), async (req, res, next) => {
   try {
     const result = getDelegate(req.params.type);
     if (!result) return res.status(400).json({ error: `Unknown lookup type: ${req.params.type}` });
@@ -90,7 +91,7 @@ router.patch('/api/lookups/:type/:id', async (req, res, next) => {
 });
 
 // PATCH /api/lookups/:type/:id/toggle
-router.patch('/api/lookups/:type/:id/toggle', async (req, res, next) => {
+router.patch('/api/lookups/:type/:id/toggle', authorize('settings.manage_lookups'), async (req, res, next) => {
   try {
     const result = getDelegate(req.params.type);
     if (!result) return res.status(400).json({ error: `Unknown lookup type: ${req.params.type}` });

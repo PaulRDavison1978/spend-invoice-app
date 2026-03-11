@@ -2,6 +2,7 @@ import { Router } from 'express';
 import Anthropic from '@anthropic-ai/sdk';
 import prisma from '../lib/prisma.js';
 import { decrypt } from '../services/cryptoService.js';
+import authorize from '../middleware/authorize.js';
 
 const router = Router();
 
@@ -79,7 +80,7 @@ async function resolveApiKey() {
   return process.env.ANTHROPIC_API_KEY || null;
 }
 
-router.post('/api/extract-invoice', async (req, res) => {
+router.post('/api/extract-invoice', authorize('invoices.extract', 'invoices.upload'), async (req, res) => {
   try {
     const { file, mediaType } = req.body;
 

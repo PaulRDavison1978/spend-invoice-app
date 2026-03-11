@@ -7,7 +7,7 @@ import authorize from '../middleware/authorize.js';
 const router = Router();
 
 // GET /api/spend-approvals
-router.get('/api/spend-approvals', async (req, res, next) => {
+router.get('/api/spend-approvals', authorize('spend.view_all', 'spend.view_own', 'spend.view_dept'), async (req, res, next) => {
   try {
     const spends = await prisma.spendApproval.findMany({
       include: {
@@ -23,7 +23,7 @@ router.get('/api/spend-approvals', async (req, res, next) => {
 });
 
 // POST /api/spend-approvals
-router.post('/api/spend-approvals', async (req, res, next) => {
+router.post('/api/spend-approvals', authorize('spend.create'), async (req, res, next) => {
   try {
     const {
       ref, department, title, currency, amount, category, vendor,
@@ -31,11 +31,16 @@ router.post('/api/spend-approvals', async (req, res, next) => {
       submittedBy, inBudget, exceptional, timeSensitive, justification, ccRecipients,
     } = req.body;
 
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount < 0 || parsedAmount > 999999999.99) {
+      return res.status(400).json({ error: 'Invalid amount' });
+    }
+
     // Escalation logic: if approver has a limit and amount exceeds it and approver is not CEO
     let status = 'Pending';
     if (approverId) {
       const approver = await prisma.user.findUnique({ where: { id: approverId } });
-      if (approver && approver.approvalLimit > 0 && parseFloat(amount) > parseFloat(approver.approvalLimit) && !approver.isCeo) {
+      if (approver && approver.approvalLimit > 0 && parsedAmount > parseFloat(approver.approvalLimit) && !approver.isCeo) {
         status = 'Escalated';
       }
     }
@@ -46,7 +51,7 @@ router.post('/api/spend-approvals', async (req, res, next) => {
         department,
         title,
         currency,
-        amount: parseFloat(amount) || 0,
+        amount: parsedAmount,
         category,
         vendor,
         businessUnit: businessUnit || null,
@@ -71,7 +76,7 @@ router.post('/api/spend-approvals', async (req, res, next) => {
     await logAudit({ action: 'SPEND_CREATED', details: `Spend approval "${title}" (${ref}) created — ${currency} ${amount}`, performedBy, userId: req.user?.id });
 
     // Notify approver via email (fire-and-forget), CC additional recipients
-    const ccEmails = ccRecipients ? ccRecipients.split(',').map(e => e.trim()).filter(Boolean) : [];
+    const ccEmails = ccRecipients ? ccRecipients.split(',').map(e => e.trim().replace(/[\r\n]/g, '')).filter(e => e && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) : [];
     if (approverId) {
       const approver = spend.approver || await prisma.user.findUnique({ where: { id: approverId } });
       if (approver?.email) {
@@ -93,7 +98,7 @@ router.post('/api/spend-approvals', async (req, res, next) => {
 });
 
 // GET /api/spend-approvals/:id
-router.get('/api/spend-approvals/:id', async (req, res, next) => {
+router.get('/api/spend-approvals/:id', authorize('spend.view_all', 'spend.view_own', 'spend.view_dept'), async (req, res, next) => {
   try {
     const spend = await prisma.spendApproval.findUnique({
       where: { id: parseInt(req.params.id) },
@@ -155,7 +160,7 @@ router.put('/api/spend-approvals/:id', authorize('spend.edit'), async (req, res,
     await logAudit({ action: 'SPEND_UPDATED', details: `Spend approval "${updated.title}" (${updated.ref}) updated — fields changed: ${changedFields.length > 0 ? changedFields.join(', ') : 'none'}`, performedBy, userId: req.user?.id });
 
     // Notify approver + CC of changes (fire-and-forget)
-    const ccEmails = updated.ccRecipients ? updated.ccRecipients.split(',').map(e => e.trim()).filter(Boolean) : [];
+    const ccEmails = updated.ccRecipients ? updated.ccRecipients.split(',').map(e => e.trim().replace(/[\r\n]/g, '')).filter(e => e && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) : [];
     if (updated.approver?.email) {
       sendTemplateEmail('spend_approval_changed', updated.approver.email, {
         approver_name: updated.approver.name,
@@ -175,7 +180,7 @@ router.put('/api/spend-approvals/:id', authorize('spend.edit'), async (req, res,
 });
 
 // PATCH /api/spend-approvals/:id/approve
-router.patch('/api/spend-approvals/:id/approve', async (req, res, next) => {
+router.patch('/api/spend-approvals/:id/approve', authorize('spend.approve'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
     const spend = await prisma.spendApproval.findUnique({ where: { id } });
@@ -212,7 +217,7 @@ router.patch('/api/spend-approvals/:id/approve', async (req, res, next) => {
 });
 
 // PATCH /api/spend-approvals/:id/reject
-router.patch('/api/spend-approvals/:id/reject', async (req, res, next) => {
+router.patch('/api/spend-approvals/:id/reject', authorize('spend.approve'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
     const spend = await prisma.spendApproval.findUnique({ where: { id } });
@@ -249,7 +254,7 @@ router.patch('/api/spend-approvals/:id/reject', async (req, res, next) => {
 });
 
 // POST /api/spend-approvals/bulk-approve
-router.post('/api/spend-approvals/bulk-approve', async (req, res, next) => {
+router.post('/api/spend-approvals/bulk-approve', authorize('spend.approve'), async (req, res, next) => {
   try {
     const { ids } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'ids array is required' });
@@ -288,7 +293,7 @@ router.post('/api/spend-approvals/bulk-approve', async (req, res, next) => {
 });
 
 // POST /api/spend-approvals/bulk-reject
-router.post('/api/spend-approvals/bulk-reject', async (req, res, next) => {
+router.post('/api/spend-approvals/bulk-reject', authorize('spend.approve'), async (req, res, next) => {
   try {
     const { ids } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'ids array is required' });
@@ -327,7 +332,7 @@ router.post('/api/spend-approvals/bulk-reject', async (req, res, next) => {
 });
 
 // POST /api/spend-approvals/:id/attachments
-router.post('/api/spend-approvals/:id/attachments', async (req, res, next) => {
+router.post('/api/spend-approvals/:id/attachments', authorize('spend.create', 'spend.edit'), async (req, res, next) => {
   try {
     const spendId = parseInt(req.params.id);
     const spend = await prisma.spendApproval.findUnique({ where: { id: spendId } });
@@ -335,6 +340,14 @@ router.post('/api/spend-approvals/:id/attachments', async (req, res, next) => {
 
     const { fileName, fileType, fileUrl } = req.body;
     if (!fileName || !fileUrl) return res.status(400).json({ error: 'fileName and fileUrl are required' });
+
+    // Validate fileUrl — only allow safe data: URLs (PDF/images) or https URLs
+    if (fileUrl && !fileUrl.startsWith('https://')) {
+      const allowedDataPrefixes = ['data:application/pdf;', 'data:image/png;', 'data:image/jpeg;', 'data:image/gif;', 'data:image/webp;'];
+      if (!allowedDataPrefixes.some(p => fileUrl.startsWith(p))) {
+        return res.status(400).json({ error: 'Invalid file URL — only PDF and image data URLs or https URLs are allowed' });
+      }
+    }
 
     const attachment = await prisma.spendAttachment.create({
       data: {
@@ -352,7 +365,7 @@ router.post('/api/spend-approvals/:id/attachments', async (req, res, next) => {
 });
 
 // POST /api/spend-approvals/bulk-import — bulk create spend approvals from spreadsheet
-router.post('/api/spend-approvals/bulk-import', async (req, res, next) => {
+router.post('/api/spend-approvals/bulk-import', authorize('spend.create'), async (req, res, next) => {
   try {
     const items = req.body;
     if (!Array.isArray(items) || items.length === 0) {
@@ -410,7 +423,7 @@ router.post('/api/spend-approvals/bulk-import', async (req, res, next) => {
 });
 
 // DELETE /api/spend-approvals/:id
-router.delete('/api/spend-approvals/:id', async (req, res, next) => {
+router.delete('/api/spend-approvals/:id', authorize('spend.edit'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
     const spend = await prisma.spendApproval.findUnique({ where: { id } });

@@ -3,11 +3,12 @@ import prisma from '../lib/prisma.js';
 import { logAudit } from '../services/auditService.js';
 import { findMatches } from '../services/matchingService.js';
 import { checkSpendThreshold } from '../services/thresholdService.js';
+import authorize from '../middleware/authorize.js';
 
 const router = Router();
 
 // GET /api/invoices
-router.get('/api/invoices', async (req, res, next) => {
+router.get('/api/invoices', authorize('invoices.view_all', 'invoices.view_own'), async (req, res, next) => {
   try {
     const invoices = await prisma.invoice.findMany({
       include: {
@@ -22,7 +23,7 @@ router.get('/api/invoices', async (req, res, next) => {
 });
 
 // POST /api/invoices
-router.post('/api/invoices', async (req, res, next) => {
+router.post('/api/invoices', authorize('invoices.upload'), async (req, res, next) => {
   try {
     const {
       invoiceNumber, vendor, date, dueDate, amount, taxAmount,
@@ -38,6 +39,14 @@ router.post('/api/invoices', async (req, res, next) => {
       });
       if (existing) {
         return res.status(409).json({ error: `Duplicate invoice: ${invoiceNumber} from ${vendor} already exists`, duplicate: true });
+      }
+    }
+
+    // Validate fileUrl — only allow safe data: URLs (PDF/images) or https URLs
+    if (fileUrl && !fileUrl.startsWith('https://')) {
+      const allowedDataPrefixes = ['data:application/pdf;', 'data:image/png;', 'data:image/jpeg;', 'data:image/gif;', 'data:image/webp;'];
+      if (!allowedDataPrefixes.some(p => fileUrl.startsWith(p))) {
+        return res.status(400).json({ error: 'Invalid file URL — only PDF and image data URLs or https URLs are allowed' });
       }
     }
 
@@ -79,7 +88,7 @@ router.post('/api/invoices', async (req, res, next) => {
 });
 
 // GET /api/invoices/:id
-router.get('/api/invoices/:id', async (req, res, next) => {
+router.get('/api/invoices/:id', authorize('invoices.view_all', 'invoices.view_own'), async (req, res, next) => {
   try {
     const invoice = await prisma.invoice.findUnique({
       where: { id: parseInt(req.params.id) },
@@ -95,7 +104,7 @@ router.get('/api/invoices/:id', async (req, res, next) => {
 });
 
 // DELETE /api/invoices/:id
-router.delete('/api/invoices/:id', async (req, res, next) => {
+router.delete('/api/invoices/:id', authorize('invoices.delete'), async (req, res, next) => {
   try {
     const invoice = await prisma.invoice.findUnique({ where: { id: parseInt(req.params.id) } });
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
@@ -110,7 +119,7 @@ router.delete('/api/invoices/:id', async (req, res, next) => {
 });
 
 // PATCH /api/invoices/:id/link
-router.patch('/api/invoices/:id/link', async (req, res, next) => {
+router.patch('/api/invoices/:id/link', authorize('invoices.link'), async (req, res, next) => {
   try {
     const { spendApprovalId } = req.body;
     if (!spendApprovalId) return res.status(400).json({ error: 'spendApprovalId is required' });
@@ -137,7 +146,7 @@ router.patch('/api/invoices/:id/link', async (req, res, next) => {
 });
 
 // PATCH /api/invoices/:id/unlink
-router.patch('/api/invoices/:id/unlink', async (req, res, next) => {
+router.patch('/api/invoices/:id/unlink', authorize('invoices.link'), async (req, res, next) => {
   try {
     const invoice = await prisma.invoice.findUnique({ where: { id: parseInt(req.params.id) } });
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
@@ -207,7 +216,7 @@ router.put('/api/invoices/:id/monthly-costs', async (req, res, next) => {
 });
 
 // POST /api/invoices/bulk-import — bulk create invoices from spreadsheet data
-router.post('/api/invoices/bulk-import', async (req, res, next) => {
+router.post('/api/invoices/bulk-import', authorize('invoices.upload'), async (req, res, next) => {
   try {
     const items = req.body;
     if (!Array.isArray(items) || items.length === 0) {
@@ -259,7 +268,7 @@ router.post('/api/invoices/bulk-import', async (req, res, next) => {
 });
 
 // POST /api/invoices/match
-router.post('/api/invoices/match', async (req, res, next) => {
+router.post('/api/invoices/match', authorize('invoices.link'), async (req, res, next) => {
   try {
     const hasAssignAll = req.userPermissions?.includes('invoices.assign_all');
     const results = await findMatches({

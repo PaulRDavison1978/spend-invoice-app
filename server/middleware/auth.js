@@ -46,7 +46,7 @@ export default function auth(req, res, next) {
     // Multi-tenant: we validate issuer per-token below
   }, async (err, decoded) => {
     if (err) {
-      return res.status(401).json({ error: 'Invalid token', details: err.message });
+      return res.status(401).json({ error: 'Invalid token', ...(process.env.NODE_ENV !== 'production' && { details: err.message }) });
     }
 
     // Validate issuer matches the tenant ID in the token (v1 or v2 format)

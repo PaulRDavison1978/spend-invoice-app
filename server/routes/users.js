@@ -2,11 +2,12 @@ import { Router } from 'express';
 import prisma from '../lib/prisma.js';
 import { logAudit } from '../services/auditService.js';
 import { sendTemplateEmail } from '../services/emailService.js';
+import authorize from '../middleware/authorize.js';
 
 const router = Router();
 
 // GET /api/users
-router.get('/api/users', async (req, res, next) => {
+router.get('/api/users', authorize('settings.manage_users'), async (req, res, next) => {
   try {
     const users = await prisma.user.findMany({
       include: { role: { select: { id: true, name: true } } },
@@ -17,11 +18,12 @@ router.get('/api/users', async (req, res, next) => {
 });
 
 // POST /api/users/invite
-router.post('/api/users/invite', async (req, res, next) => {
+router.post('/api/users/invite', authorize('settings.manage_users'), async (req, res, next) => {
   try {
     const { roleId } = req.body;
     const email = req.body.email?.toLowerCase()?.trim();
     if (!email) return res.status(400).json({ error: 'email is required' });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Invalid email format' });
 
     const existing = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } });
     if (existing) return res.status(409).json({ error: 'User with this email already exists' });
@@ -58,7 +60,7 @@ router.post('/api/users/invite', async (req, res, next) => {
 });
 
 // PATCH /api/users/:id/role
-router.patch('/api/users/:id/role', async (req, res, next) => {
+router.patch('/api/users/:id/role', authorize('settings.manage_users'), async (req, res, next) => {
   try {
     const { roleId } = req.body;
     if (!roleId) return res.status(400).json({ error: 'roleId is required' });
@@ -77,7 +79,7 @@ router.patch('/api/users/:id/role', async (req, res, next) => {
 });
 
 // PATCH /api/users/:id/remove
-router.patch('/api/users/:id/remove', async (req, res, next) => {
+router.patch('/api/users/:id/remove', authorize('settings.manage_users'), async (req, res, next) => {
   try {
     const user = await prisma.user.update({
       where: { id: parseInt(req.params.id) },
@@ -92,7 +94,7 @@ router.patch('/api/users/:id/remove', async (req, res, next) => {
 });
 
 // POST /api/users/:id/anonymize
-router.post('/api/users/:id/anonymize', async (req, res, next) => {
+router.post('/api/users/:id/anonymize', authorize('settings.manage_users'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
     const existing = await prisma.user.findUnique({ where: { id } });

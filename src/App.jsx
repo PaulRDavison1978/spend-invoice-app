@@ -460,6 +460,7 @@ const [aiImport, setAiImport] = useState({ open: false, loading: false, error: n
 const [bliSearch, setBliSearch] = useState('');
 const [bliGroupBy, setBliGroupBy] = useState('');
 const [bliFilters, setBliFilters] = useState({ type: '', businessUnit: '', region: '', currency: '', vendor: '' });
+const [expandedBudgetLine, setExpandedBudgetLine] = useState(null);
 const canManageBudgets = () => hasPermission('budget.manage_all') || hasPermission('budget.manage_own');
 const getUserFunctions = () => {
   if (hasPermission('budget.manage_all')) return functions.filter(f => f.active);
@@ -1270,6 +1271,43 @@ const confirmAiImport = async (budgetId, rows) => {
 // Budget detail view
 if (budgetView === 'detail' && selectedBudget) { const sb = selectedBudget; const isDraft = sb.status === 'Draft';
 const totalEur = (sb.lineItems || []).reduce((sum, li) => sum + (parseFloat(li.eurAnnual) || 0), 0);
+const _MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+// Compliance metrics
+const _items = sb.lineItems || [];
+const linkedItems = _items.filter(li => li.spendApproval);
+const unlinkedItems = _items.filter(li => !li.spendApproval);
+const _toEur = (amount, currency) => { if (!currency || currency === 'EUR') return parseFloat(amount) || 0; return (parseFloat(amount) || 0) * (eurRates[currency] || 1); };
+let _totalInvoiced = 0;
+const _monthBudget = {}; const _monthInvoiced = {};
+_MONTHS.forEach(m => { _monthBudget[m] = 0; _monthInvoiced[m] = 0; });
+const _seenSA = new Set();
+_items.forEach(li => {
+  _MONTHS.forEach(m => { _monthBudget[m] += parseFloat(li.monthlyBudget?.[m]) || 0; });
+  if (li.spendApproval && !_seenSA.has(li.spendApproval.id)) {
+    _seenSA.add(li.spendApproval.id);
+    (li.spendApproval.invoices || []).forEach(inv => {
+      const invTotal = _toEur(parseFloat(inv.amount) + parseFloat(inv.taxAmount || 0), inv.currency);
+      _totalInvoiced += invTotal;
+      if (inv.monthlyCosts?.length > 0) {
+        inv.monthlyCosts.forEach(mc => { _monthInvoiced[mc.month] = (_monthInvoiced[mc.month] || 0) + _toEur(parseFloat(mc.amount), inv.currency); });
+      } else {
+        const mIdx = inv.date ? parseInt(inv.date.slice(5, 7), 10) - 1 : -1;
+        if (mIdx >= 0 && mIdx < 12) _monthInvoiced[_MONTHS[mIdx]] += invTotal;
+      }
+    });
+  }
+});
+const _ubSAs = sb.unbudgetedSAs || [];
+const _ubTotalEur = _ubSAs.reduce((s, sa) => s + _toEur(parseFloat(sa.amount), sa.currency), 0);
+const _totalExposure = _totalInvoiced + _ubSAs.reduce((s, sa) => s + (sa.invoices || []).reduce((is, inv) => is + _toEur(parseFloat(inv.amount) + parseFloat(inv.taxAmount || 0), inv.currency), 0), 0);
+const _variance = totalEur - _totalInvoiced;
+const _pctSpent = totalEur > 0 ? Math.round((_totalInvoiced / totalEur) * 100) : 0;
+const _pctLinked = _items.length > 0 ? Math.round((linkedItems.length / _items.length) * 100) : 0;
+const _projectedTotal = totalEur + _ubTotalEur;
+const _projectedVariance = _projectedTotal - totalEur;
+const _monthsElapsed = Math.max(new Date().getMonth() + 1, 1);
+const _burnProjection = _totalExposure > 0 ? (_totalExposure / _monthsElapsed) * 12 : 0;
+const _maxBar = Math.max(..._MONTHS.map(m => Math.max(_monthBudget[m], _monthInvoiced[m])), 1);
 const lineItemFormDefault = { type: 'BAU', businessUnit: '', serviceCategory: '', licence: '', costCentre: '', region: '', vendor: '', contractEndDate: '', contractValue: '', currency: '', eurAnnual: '', comments: '', monthlyBudget: null };
 return (<div className={_pg}><div className="w-full">{budgetNavBar}
 <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
@@ -1280,10 +1318,67 @@ return (<div className={_pg}><div className="w-full">{budgetNavBar}
 <span className={`px-3 py-1.5 rounded-full text-sm font-semibold ${sb.status === 'Draft' ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'}`}>{sb.status === 'Draft' ? 'Draft' : `Submitted ${sb.submittedAt ? new Date(sb.submittedAt).toLocaleDateString() : ''}`}</span>
 <button onClick={() => { setBudgetView('list'); setSelectedBudget(null); }} className="text-sm text-indigo-600 hover:text-indigo-800 font-semibold">← Back</button>
 </div></div>
-<div className="grid grid-cols-3 gap-4 mb-4">
-<div className="bg-teal-50 rounded-lg p-4 border border-teal-200"><p className="text-xs font-medium text-teal-600 uppercase">Total Annual (EUR)</p><p className="text-2xl font-bold text-teal-800">€{totalEur.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</p></div>
-<div className="bg-blue-50 rounded-lg p-4 border border-blue-200"><p className="text-xs font-medium text-blue-600 uppercase">Line Items</p><p className="text-2xl font-bold text-blue-800">{(sb.lineItems||[]).length}</p></div>
-<div className="bg-purple-50 rounded-lg p-4 border border-purple-200"><p className="text-xs font-medium text-purple-600 uppercase">Monthly Avg</p><p className="text-2xl font-bold text-purple-800">€{(totalEur/12).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</p></div>
+{/* Compliance metrics */}
+<div className="grid grid-cols-2 lg:grid-cols-7 gap-3 mb-4">
+<div className="bg-teal-50 rounded-lg p-3 border border-teal-200">
+<p className="text-[10px] font-semibold text-teal-600 uppercase tracking-wide">Budget</p>
+<p className="text-xl font-bold text-teal-800">€{totalEur.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</p>
+<p className="text-xs text-teal-600">{_items.length} line items</p>
+</div>
+<div className="bg-red-50 rounded-lg p-3 border border-red-200">
+<p className="text-[10px] font-semibold text-red-600 uppercase tracking-wide">Invoiced (In Budget)</p>
+<p className="text-xl font-bold text-red-700">€{_totalInvoiced.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</p>
+<p className={`text-xs font-semibold ${_pctSpent > 100 ? 'text-red-600' : _pctSpent > 80 ? 'text-amber-600' : 'text-green-600'}`}>{_pctSpent}% of budget</p>
+</div>
+<div className={`rounded-lg p-3 border ${_variance >= 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+<p className={`text-[10px] font-semibold uppercase tracking-wide ${_variance >= 0 ? 'text-green-600' : 'text-red-600'}`}>Remaining</p>
+<p className={`text-xl font-bold ${_variance >= 0 ? 'text-green-700' : 'text-red-700'}`}>{_variance >= 0 ? '' : '-'}€{Math.abs(_variance).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</p>
+<p className={`text-xs ${_variance >= 0 ? 'text-green-600' : 'text-red-600 font-semibold'}`}>{_variance >= 0 ? 'Under budget' : 'Over budget'}</p>
+</div>
+<div className={`rounded-lg p-3 border ${_ubSAs.length > 0 ? 'bg-orange-50 border-orange-300' : 'bg-gray-50 border-gray-200'}`}>
+<p className={`text-[10px] font-semibold uppercase tracking-wide ${_ubSAs.length > 0 ? 'text-orange-600' : 'text-gray-500'}`}>Unbudgeted Spend</p>
+<p className={`text-xl font-bold ${_ubSAs.length > 0 ? 'text-orange-700' : 'text-gray-400'}`}>€{_ubTotalEur.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</p>
+<p className={`text-xs ${_ubSAs.length > 0 ? 'text-orange-600' : 'text-gray-400'}`}>{_ubSAs.length} approved SA{_ubSAs.length !== 1 ? 's' : ''} not in budget</p>
+</div>
+<div className="bg-indigo-50 rounded-lg p-3 border border-indigo-200">
+<p className="text-[10px] font-semibold text-indigo-600 uppercase tracking-wide">SA Coverage</p>
+<p className="text-xl font-bold text-indigo-800">{_pctLinked}%</p>
+<p className="text-xs text-indigo-600">{linkedItems.length} linked · {unlinkedItems.length} unlinked</p>
+</div>
+<div className="bg-amber-50 rounded-lg p-3 border border-amber-200">
+<p className="text-[10px] font-semibold text-amber-600 uppercase tracking-wide">Burn Rate</p>
+<p className="text-xl font-bold text-amber-800">€{(_totalExposure > 0 ? (_totalExposure / _monthsElapsed) : 0).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})}<span className="text-sm font-medium text-amber-600">/mo</span></p>
+<p className="text-xs text-amber-600">Budget €{(totalEur / 12).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})}/mo</p>
+</div>
+<div className={`rounded-lg p-3 border ${_projectedTotal > totalEur ? 'bg-purple-50 border-purple-300' : 'bg-gray-50 border-gray-200'}`}>
+<p className="text-[10px] font-semibold text-purple-600 uppercase tracking-wide">Projected Total</p>
+<p className="text-xl font-bold text-purple-800">€{_projectedTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</p>
+<p className={`text-xs font-semibold ${_projectedVariance > 0 ? 'text-red-600' : 'text-green-600'}`}>{_projectedVariance > 0 && totalEur > 0 ? `+${((_projectedVariance / totalEur) * 100).toFixed(1)}% increase` : 'On budget'}</p>
+</div>
+</div>
+{/* Budget vs Invoiced monthly bar chart */}
+{_totalInvoiced > 0 && (<div className="mb-4">
+<div className="flex items-center gap-4 mb-2"><span className="text-xs font-semibold text-gray-500 uppercase">Budget vs Invoiced by Month</span>
+<span className="flex items-center gap-1 text-xs text-gray-400"><span className="w-2.5 h-2.5 rounded-sm bg-teal-300 inline-block"></span>Budget</span>
+<span className="flex items-center gap-1 text-xs text-gray-400"><span className="w-2.5 h-2.5 rounded-sm bg-red-400 inline-block"></span>Invoiced</span>
+</div>
+<div className="flex items-end gap-1 h-20">
+{_MONTHS.map(m => { const bv = _monthBudget[m]; const iv = _monthInvoiced[m]; const bH = Math.round((bv / _maxBar) * 100); const iH = Math.round((iv / _maxBar) * 100); return (
+<div key={m} className="flex-1 flex flex-col items-center">
+<div className="w-full flex items-end gap-px" style={{height:'60px'}}>
+<div className="flex-1 bg-teal-300 rounded-t transition-all" style={{height:`${Math.max(bH * 0.6, bv > 0 ? 2 : 0)}px`}} title={`Budget: €${bv.toLocaleString(undefined,{minimumFractionDigits:2})}`}/>
+<div className={`flex-1 rounded-t transition-all ${iv > bv && bv > 0 ? 'bg-red-500' : 'bg-red-400'}`} style={{height:`${Math.max(iH * 0.6, iv > 0 ? 2 : 0)}px`}} title={`Invoiced: €${iv.toLocaleString(undefined,{minimumFractionDigits:2})}`}/>
+</div>
+<span className="text-[10px] text-gray-400 mt-0.5">{m}</span>
+</div>); })}
+</div>
+</div>)}
+{/* % spent progress bar */}
+<div className="mb-4">
+<div className="flex justify-between text-xs mb-1"><span className="text-gray-500 font-medium">Budget Utilisation</span><span className={`font-bold ${_pctSpent > 100 ? 'text-red-600' : _pctSpent > 80 ? 'text-amber-600' : 'text-teal-700'}`}>{_pctSpent}%</span></div>
+<div className="w-full bg-gray-200 rounded-full h-2.5">
+<div className={`h-2.5 rounded-full transition-all ${_pctSpent > 100 ? 'bg-red-500' : _pctSpent > 80 ? 'bg-amber-500' : 'bg-teal-500'}`} style={{width:`${Math.min(_pctSpent, 100)}%`}}></div>
+</div>
 </div>
 {isDraft && (<div className="flex items-center space-x-3 mb-4">
 <button onClick={() => (sb.lineItems||[]).length > 0 ? submitBudget(sb.id) : alert('Add at least one line item before submitting')} className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold"><Send className="w-4 h-4"/><span>Submit Budget</span></button>
@@ -1369,14 +1464,35 @@ return (<div className="bg-amber-50 border border-amber-200 rounded-lg p-6 mb-6"
 {/* Line Items Table */}
 {(() => { const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const fmtM = v => typeof v === 'number' ? v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : '0.00';
-const monthTotals = {}; MONTHS.forEach(m => { monthTotals[m] = (sb.lineItems||[]).reduce((sum, li) => sum + (parseFloat(li.monthlyBudget?.[m]) || 0), 0); });
+const toEur = (amount, currency) => {
+  if (!currency || currency === 'EUR') return amount;
+  const rate = eurRates[currency] || 1;
+  return amount * rate;
+};
+const getLineInvoiced = (li) => {
+  if (!li.spendApproval?.invoices?.length) return { total: 0, monthly: {} };
+  const monthly = {};
+  MONTHS.forEach(m => { monthly[m] = 0; });
+  let total = 0;
+  li.spendApproval.invoices.forEach(inv => {
+    const invTotal = toEur(parseFloat(inv.amount) + parseFloat(inv.taxAmount || 0), inv.currency);
+    total += invTotal;
+    if (inv.monthlyCosts?.length > 0) {
+      inv.monthlyCosts.forEach(mc => { monthly[mc.month] = (monthly[mc.month] || 0) + toEur(parseFloat(mc.amount), inv.currency); });
+    } else {
+      const dateStr = inv.date || '';
+      const monthIdx = dateStr ? parseInt(dateStr.slice(5, 7), 10) - 1 : -1;
+      if (monthIdx >= 0 && monthIdx < 12) monthly[MONTHS[monthIdx]] += invTotal;
+    }
+  });
+  return { total, monthly };
+};
 const _ic = "w-full text-sm px-1.5 py-1 border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-teal-500 focus:border-teal-500 bg-white";
 const updateLineField = async (li, field, val) => {
   try {
     const patch = { [field]: val };
-    // If updating monthly, recalc annual
     if (field === 'monthlyBudget') {
-      patch.eurAnnual = MONTHS.reduce((s, m) => s + (parseFloat(val[m]) || 0), 0);
+      patch.eurAnnual = Math.round(MONTHS.reduce((s, m) => s + (parseFloat(val[m]) || 0), 0) * 100) / 100;
     }
     await api.patch(`/api/budgets/${sb.id}/line-items/${li.id}`, patch);
     setSelectedBudget(prev => ({ ...prev, lineItems: prev.lineItems.map(l => l.id === li.id ? { ...l, ...patch } : l) }));
@@ -1392,57 +1508,86 @@ const budgetCommentModal = commentModal && (
 <button onClick={() => setCommentModal(null)} className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium">Cancel</button>
 <button onClick={() => { updateLineField(commentModal, 'comments', commentText.trim() || null); setCommentModal(null); }} className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium">Save</button>
 </div></div></div>);
-const updateLineMonth = (li, month, val) => {
-  const mb = { ...(li.monthlyBudget || {}), [month]: parseFloat(val) || 0 };
-  updateLineField(li, 'monthlyBudget', mb);
-};
 const blurText = (li, field, e) => { const v = e.target.value.trim(); if (v !== (li[field]||'')) updateLineField(li, field, v || null); };
-const blurNum = (li, field, e) => { const v = e.target.value; const n = parseFloat(v) || null; if (n !== (parseFloat(li[field])||null)) updateLineField(li, field, n); };
-// Detect spread: all months equal means spread is active
-const isSpreadLine = (li) => {
+const detectBookingMode = (li) => {
   const mb = li.monthlyBudget || {};
   const vals = MONTHS.map(m => parseFloat(mb[m]) || 0);
-  return vals[0] > 0 && vals.every(v => v === vals[0]);
+  const nonZero = vals.filter(v => v > 0);
+  if (nonZero.length === 0) return 'spread';
+  if (nonZero.length === 1) return 'single';
+  if (vals[0] > 0 && vals.every(v => v === vals[0])) return 'spread';
+  if (nonZero.length > 1 && nonZero.length < 12) return 'period';
+  return 'spread';
 };
-// Initialize spread state from data on first render of this budget
 if (sb.lineItems && Object.keys(spreadLines).length === 0) {
   const initial = {};
-  sb.lineItems.forEach(li => { if (isSpreadLine(li)) initial[li.id] = true; });
+  sb.lineItems.forEach(li => { initial[li.id] = detectBookingMode(li); });
   if (Object.keys(initial).length > 0) { setTimeout(() => setSpreadLines(initial), 0); }
 }
-const doSpread = async (liOrId, cv, cur) => {
-  const lid = typeof liOrId === 'object' ? liOrId.id : liOrId;
-  const val = parseFloat(cv) || 0;
-  if (val === 0) return;
+const getBookingMode = (li) => spreadLines[li.id] || detectBookingMode(li);
+const setBookingMode = (li, mode) => { setSpreadLines(prev => ({ ...prev, [li.id]: mode })); };
+const applyBooking = async (li, mode, opts = {}) => {
+  const cv = parseFloat(opts.contractValue ?? li.contractValue) || 0;
+  const cur = opts.currency || li.currency || 'EUR';
   const rate = eurRates[cur] || 1;
-  const eurTotal = val * rate;
-  const monthly = Math.round((eurTotal / 12) * 100) / 100;
-  const mb = {}; MONTHS.forEach(m => { mb[m] = monthly; });
-  const eurAnnual = monthly * 12;
+  const eurTotal = Math.round(cv * rate * 100) / 100;
+  if (eurTotal === 0) return;
+  const mb = {};
+  MONTHS.forEach(m => { mb[m] = 0; });
+  if (mode === 'spread') {
+    const monthly = Math.round((eurTotal / 12) * 100) / 100;
+    const remainder = Math.round((eurTotal - monthly * 12) * 100) / 100;
+    MONTHS.forEach((m, i) => { mb[m] = i === 0 ? monthly + remainder : monthly; });
+  } else if (mode === 'single') {
+    const month = opts.month || 'Jan';
+    mb[month] = eurTotal;
+  } else if (mode === 'period') {
+    const startIdx = MONTHS.indexOf(opts.startMonth || 'Jan');
+    const endIdx = MONTHS.indexOf(opts.endMonth || 'Dec');
+    const s = Math.min(startIdx, endIdx);
+    const e = Math.max(startIdx, endIdx);
+    const count = e - s + 1;
+    const monthly = Math.round((eurTotal / count) * 100) / 100;
+    const remainder = Math.round((eurTotal - monthly * count) * 100) / 100;
+    for (let i = s; i <= e; i++) { mb[MONTHS[i]] = i === s ? monthly + remainder : monthly; }
+  }
+  const eurAnnual = Math.round(MONTHS.reduce((sum, m) => sum + mb[m], 0) * 100) / 100;
   try {
-    await api.patch(`/api/budgets/${sb.id}/line-items/${lid}`, { monthlyBudget: mb, eurAnnual });
-    setSelectedBudget(prev => ({ ...prev, lineItems: prev.lineItems.map(l => l.id === lid ? { ...l, monthlyBudget: mb, eurAnnual } : l) }));
+    await api.patch(`/api/budgets/${sb.id}/line-items/${li.id}`, { monthlyBudget: mb, eurAnnual });
+    setSelectedBudget(prev => ({ ...prev, lineItems: prev.lineItems.map(l => l.id === li.id ? { ...l, monthlyBudget: mb, eurAnnual } : l) }));
     refreshBudgetReport();
-  } catch (err) { alert('Failed to spread: ' + err.message); }
+  } catch (err) { alert('Failed to apply booking: ' + err.message); }
 };
-const toggleSpread = (li) => {
-  const isOn = !spreadLines[li.id];
-  setSpreadLines(prev => ({ ...prev, [li.id]: isOn }));
-  if (isOn) doSpread(li, li.contractValue, li.currency);
+const detectPeriod = (li) => {
+  const mb = li.monthlyBudget || {};
+  let start = null, end = null;
+  MONTHS.forEach((m, i) => { if ((parseFloat(mb[m]) || 0) > 0) { if (start === null) start = i; end = i; } });
+  return { startMonth: start !== null ? MONTHS[start] : 'Jan', endMonth: end !== null ? MONTHS[end] : 'Dec' };
+};
+const detectSingleMonth = (li) => {
+  const mb = li.monthlyBudget || {};
+  const m = MONTHS.find(m => (parseFloat(mb[m]) || 0) > 0);
+  return m || 'Jan';
 };
 const handleContractValueBlur = (li, e) => {
   const v = e.target.value; const n = parseFloat(v) || null;
   if (n === (parseFloat(li.contractValue)||null)) return;
-  // Update contractValue in state first, then spread if needed
-  const updatedLi = { ...li, contractValue: n };
   updateLineField(li, 'contractValue', n);
-  if (spreadLines[li.id] && n) doSpread(updatedLi, n, li.currency);
+  const mode = getBookingMode(li);
+  if (n) {
+    const period = detectPeriod(li);
+    applyBooking({ ...li, contractValue: n }, mode, mode === 'single' ? { contractValue: n, month: detectSingleMonth(li) } : mode === 'period' ? { contractValue: n, ...period } : { contractValue: n });
+  }
 };
 const handleCurrencyChange = (li, newCur) => {
   updateLineField(li, 'currency', newCur);
-  if (spreadLines[li.id]) doSpread(li, li.contractValue, newCur);
+  const mode = getBookingMode(li);
+  if (li.contractValue) {
+    const period = detectPeriod(li);
+    applyBooking(li, mode, mode === 'single' ? { currency: newCur, month: detectSingleMonth(li) } : mode === 'period' ? { currency: newCur, ...period } : { currency: newCur });
+  }
 };
-const colCount = 9 + 12 + 3 + (isDraft ? 2 : 0);
+const mainColCount = isDraft ? 10 : 9;
 // --- Search, filter, group ---
 const allItems = sb.lineItems || [];
 const searchLower = bliSearch.toLowerCase();
@@ -1458,10 +1603,16 @@ const filtered = allItems.filter(li => {
 const uniqueVals = (field) => [...new Set(allItems.map(li => li[field] || '').filter(Boolean))].sort();
 const grouped = bliGroupBy ? filtered.reduce((acc, li) => { const key = li[bliGroupBy] || 'Unassigned'; (acc[key] = acc[key] || []).push(li); return acc; }, {}) : { '': filtered };
 const groupKeys = Object.keys(grouped).sort((a, b) => a === 'Unassigned' ? 1 : b === 'Unassigned' ? -1 : a.localeCompare(b));
-const filteredMonthTotals = {}; MONTHS.forEach(m => { filteredMonthTotals[m] = filtered.reduce((sum, li) => sum + (parseFloat(li.monthlyBudget?.[m]) || 0), 0); });
 const filteredTotalEur = filtered.reduce((sum, li) => sum + (parseFloat(li.eurAnnual) || 0), 0);
 const hasActiveFilters = bliSearch || bliFilters.type || bliFilters.businessUnit || bliFilters.region || bliFilters.currency || bliFilters.vendor || bliGroupBy;
-return (<div className="bg-white rounded-xl shadow-lg overflow-hidden" style={{maxWidth:'calc(100vw - 2rem)'}}>
+const isExpanded = (id) => expandedBudgetLine === id;
+const toggleExpand = (id) => setExpandedBudgetLine(prev => prev === id ? null : id);
+// Monthly sparkline mini-bar for collapsed rows
+const monthSpark = (vals, color = 'teal') => {
+  const max = Math.max(...vals, 1);
+  return (<div className="flex items-end gap-px h-4">{vals.map((v, i) => (<div key={i} className={`w-1.5 rounded-t ${v > 0 ? (color === 'red' ? 'bg-red-400' : 'bg-teal-400') : 'bg-gray-200'}`} style={{height: `${Math.max(v > 0 ? (v/max)*100 : 15, 15)}%`}} title={`${MONTHS[i]}: €${fmtM(v)}`}/>))}</div>);
+};
+return (<div className="bg-white rounded-xl shadow-lg overflow-hidden">
 {/* Search / Filter / Group toolbar */}
 <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
 <div className="flex flex-wrap items-center gap-2">
@@ -1476,49 +1627,202 @@ return (<div className="bg-white rounded-xl shadow-lg overflow-hidden" style={{m
 </div>
 {hasActiveFilters && <p className="text-xs text-gray-500 mt-1.5">Showing {filtered.length} of {allItems.length} line items{bliGroupBy ? ` · Grouped by ${bliGroupBy === 'businessUnit' ? 'Business Unit' : bliGroupBy === 'serviceCategory' ? 'Service Category' : bliGroupBy.charAt(0).toUpperCase() + bliGroupBy.slice(1)}` : ''}</p>}
 </div>
-<div className="overflow-x-auto overflow-y-auto max-h-[70vh]"><table className="w-full text-left text-sm">
+{/* Compact main table */}
+<div className="overflow-y-auto max-h-[70vh]"><table className="w-full text-left text-sm">
 <thead className="sticky top-0 z-10"><tr className="border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase bg-gray-50">
-<th className="px-2 py-3 min-w-[80px]">Type</th><th className="px-2 py-3 min-w-[140px]">Business Unit</th><th className="px-2 py-3 min-w-[200px]">Service Category</th><th className="px-2 py-3 min-w-[140px]">Vendor</th><th className="px-2 py-3 min-w-[80px]">Region</th><th className="px-2 py-3 min-w-[100px]">Cost Centre</th><th className="px-2 py-3 min-w-[80px]">Currency</th>
-<th className="px-2 py-3 text-right min-w-[110px]">Contract Value</th>{isDraft && <th className="px-1 py-3 text-center min-w-[55px]">Spread</th>}<th className="px-2 py-3 min-w-[100px]">Contract End</th>
-{MONTHS.map(m => <th key={m} className="px-1 py-3 text-right min-w-[85px]">{m}</th>)}
-<th className="px-2 py-3 text-right font-bold min-w-[110px]">EUR Annual</th><th className="px-1 py-3 text-center min-w-[36px]" title="Comments"><MessageSquare className="w-3.5 h-3.5 inline text-gray-400"/></th><th className="px-2 py-3 min-w-[100px]">Linked SA</th>{isDraft && <th className="px-2 py-3 text-center min-w-[60px]"></th>}
+<th className="px-3 py-3 w-8"></th>
+<th className="px-2 py-3">Vendor</th>
+<th className="px-2 py-3">Service / Licence</th>
+<th className="px-2 py-3 w-16">Type</th>
+<th className="px-2 py-3 text-right">Contract Value</th>
+<th className="px-2 py-3 text-right">EUR Annual</th>
+<th className="px-2 py-3 text-center w-24">Budget/Mo</th>
+<th className="px-2 py-3 text-right">Invoiced</th>
+<th className="px-2 py-3 text-center w-24">Invoiced/Mo</th>
+{isDraft && <th className="px-2 py-3 text-center w-16"></th>}
 </tr></thead><tbody>
 {groupKeys.map(gk => { const groupItems = grouped[gk]; const groupEur = groupItems.reduce((s, li) => s + (parseFloat(li.eurAnnual)||0), 0); return (<React.Fragment key={gk}>
-{bliGroupBy && <tr className="bg-indigo-50 border-b border-indigo-100"><td colSpan={colCount} className="px-3 py-2"><span className="text-xs font-bold text-indigo-800 uppercase">{gk}</span><span className="text-xs text-indigo-600 ml-2">({groupItems.length} items · €{groupEur.toLocaleString(undefined,{minimumFractionDigits:2})})</span></td></tr>}
+{bliGroupBy && <tr className="bg-indigo-50 border-b border-indigo-100"><td colSpan={mainColCount} className="px-3 py-2"><span className="text-xs font-bold text-indigo-800 uppercase">{gk}</span><span className="text-xs text-indigo-600 ml-2">({groupItems.length} items · €{groupEur.toLocaleString(undefined,{minimumFractionDigits:2})})</span></td></tr>}
 {groupItems.map(li => {
   const mb = li.monthlyBudget || {};
   const eurA = parseFloat(li.eurAnnual) || 0;
-  return (<tr key={li.id} className="border-b border-gray-100 hover:bg-gray-50 align-top">
-  <td className="px-1 py-1">{isDraft ? <select defaultValue={li.type} onChange={e => updateLineField(li, 'type', e.target.value)} className={_ic}><option value="BAU">BAU</option><option value="New">New</option><option value="XDT">XDT</option></select> : <span className={`px-2 py-0.5 rounded text-xs font-semibold ${li.type === 'BAU' ? 'bg-blue-100 text-blue-700' : li.type === 'New' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>{li.type}</span>}</td>
-  <td className="px-1 py-1">{isDraft ? <select defaultValue={li.businessUnit||''} onChange={e => updateLineField(li, 'businessUnit', e.target.value || null)} className={_ic}><option value="">Select...</option>{businessUnits.filter(bu=>bu.active).map(bu=>(<option key={bu.id} value={bu.name}>{bu.name}</option>))}{li.businessUnit && !businessUnits.find(bu=>bu.name===li.businessUnit) && <option value={li.businessUnit}>{li.businessUnit}</option>}</select> : <span className="text-gray-600">{li.businessUnit || '—'}</span>}</td>
-  <td className="px-1 py-1">{isDraft ? <select defaultValue={li.licence} onChange={e => updateLineField(li, 'licence', e.target.value)} className={`${_ic} font-medium`}><option value="">Select...</option>{categories.filter(c=>c.active).map(c=>(<option key={c.id} value={c.name}>{c.name}</option>))}{li.licence && !categories.find(c=>c.name===li.licence) && <option value={li.licence}>{li.licence}</option>}</select> : <span className="font-medium text-gray-800">{li.licence}</span>}</td>
-  <td className="px-1 py-1">{isDraft ? <input type="text" defaultValue={li.vendor||''} onBlur={e => blurText(li, 'vendor', e)} className={_ic} placeholder="Vendor"/> : <span className="text-gray-600">{li.vendor || '—'}</span>}</td>
-  <td className="px-1 py-1">{isDraft ? <select defaultValue={li.region||''} onChange={e => updateLineField(li, 'region', e.target.value || null)} className={_ic}><option value="">Select...</option>{regions.filter(r=>r.active).map(r=>(<option key={r.id} value={r.code}>{r.code}</option>))}{li.region && !regions.find(r=>r.code===li.region) && <option value={li.region}>{li.region}</option>}</select> : <span className="text-gray-600">{li.region || '—'}</span>}</td>
-  <td className="px-1 py-1">{isDraft ? <select defaultValue={li.costCentre||''} onChange={e => updateLineField(li, 'costCentre', e.target.value || null)} className={_ic}><option value="">Select...</option>{costCentres.filter(c=>c.active).map(c=>(<option key={c.id} value={c.code}>{c.code}</option>))}{li.costCentre && !costCentres.find(c=>c.code===li.costCentre) && <option value={li.costCentre}>{li.costCentre}</option>}</select> : <span className="text-gray-600">{li.costCentre || '—'}</span>}</td>
-  <td className="px-1 py-1">{isDraft ? <select defaultValue={li.currency||'EUR'} onChange={e => handleCurrencyChange(li, e.target.value)} className={_ic}><option value="EUR">EUR</option><option value="GBP">GBP</option><option value="USD">USD</option></select> : <span className="text-gray-600">{li.currency || '—'}</span>}</td>
-  <td className="px-1 py-1">{isDraft ? <input key={`cv-${li.id}-${li.contractValue}`} type="number" step="0.01" defaultValue={li.contractValue||''} onBlur={e => handleContractValueBlur(li, e)} className={`${_ic} text-right`} placeholder="0.00"/> : <span className="text-right block">{li.contractValue ? `${parseFloat(li.contractValue).toLocaleString(undefined,{minimumFractionDigits:2})}` : '—'}</span>}</td>
-  {isDraft && <td className="px-1 py-1 text-center"><input type="checkbox" checked={!!spreadLines[li.id]} onChange={() => toggleSpread(li)} className="w-4 h-4 text-teal-600 rounded border-gray-300 focus:ring-teal-500 cursor-pointer" title="Spread contract value evenly across months (converted to EUR)"/></td>}
-  <td className="px-1 py-1">{isDraft ? <input type="text" defaultValue={li.contractEndDate||''} onBlur={e => blurText(li, 'contractEndDate', e)} className={_ic} placeholder="dd/mm/yyyy"/> : <span className="text-gray-600">{li.contractEndDate || '—'}</span>}</td>
-  {MONTHS.map(m => (<td key={m} className="px-1 py-1 text-right">
-    {isDraft ? <input key={`${li.id}-${m}-${mb[m]}`} type="number" step="0.01" defaultValue={parseFloat(mb[m]) || ''} onBlur={e => { const v = e.target.value; if (v !== '' && parseFloat(v) !== (parseFloat(mb[m])||0)) updateLineMonth(li, m, v); }} className={`${_ic} text-right`} placeholder="0.00"/>
-    : <span className="text-sm text-gray-700">{fmtM(parseFloat(mb[m])||0)}</span>}
-  </td>))}
-  <td className="px-2 py-2 text-right font-bold text-teal-700">€{eurA.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-  <td className="px-1 py-2 text-center relative group">{isDraft ? <button onClick={() => { setCommentText(li.comments || ''); setCommentModal(li); }} className={`${li.comments ? 'text-indigo-600' : 'text-gray-300 hover:text-gray-500'}`} title={li.comments || 'Add comment'}><MessageSquare className="w-4 h-4"/></button> : li.comments ? <span className="text-indigo-600 cursor-help"><MessageSquare className="w-4 h-4 inline"/></span> : <span className="text-gray-300"><MessageSquare className="w-4 h-4 inline"/></span>}{li.comments && <div className="hidden group-hover:block absolute z-20 bottom-full left-1/2 -translate-x-1/2 mb-1 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg max-w-[250px] whitespace-pre-wrap">{li.comments}<div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div></div>}</td>
-  <td className="px-2 py-2">{li.spendApproval ? <span className="text-xs text-indigo-600 font-semibold">{li.spendApproval.ref}</span> : <span className="text-xs text-gray-400">—</span>}</td>
-  {isDraft && <td className="px-2 py-2 text-center"><button onClick={() => deleteBudgetLineItem(sb.id, li.id)} className="text-red-500 hover:text-red-700"><Trash2 className="w-4 h-4"/></button></td>}
-  </tr>);
+  const expanded = isExpanded(li.id);
+  const mode = getBookingMode(li);
+  const inv = getLineInvoiced(li);
+  const pctSpent = eurA > 0 ? Math.round((inv.total / eurA) * 100) : 0;
+  const budgetVals = MONTHS.map(m => parseFloat(mb[m]) || 0);
+  const invVals = MONTHS.map(m => inv.monthly[m] || 0);
+  return (<React.Fragment key={li.id}>
+  {/* Summary row */}
+  <tr className={`border-b ${expanded ? 'border-teal-200 bg-teal-50' : 'border-gray-100 hover:bg-gray-50'} cursor-pointer`} onClick={() => toggleExpand(li.id)}>
+  <td className="px-3 py-2.5 text-gray-400">{expanded ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}</td>
+  <td className="px-2 py-2.5"><div className="font-medium text-gray-800">{li.vendor || '—'}</div>{li.businessUnit && <div className="text-xs text-gray-400">{li.businessUnit}</div>}</td>
+  <td className="px-2 py-2.5"><div className="flex items-center gap-1.5"><span className="text-gray-800">{li.licence || '—'}</span>{li.spendApproval ? <span className="px-1.5 py-0 rounded text-[10px] font-bold bg-green-100 text-green-700 border border-green-200 whitespace-nowrap">{li.spendApproval.ref}</span> : <span className="flex items-center gap-1"><span className="px-1.5 py-0 rounded text-[10px] font-medium bg-amber-100 text-amber-600 border border-amber-200">No SA</span>{canCreateSpend() && <button onClick={e => { e.stopPropagation(); const fn = functions.find(f => f.id === sb.functionId); setSpendForm({ cc:'', title: li.licence || '', currency: li.currency || 'EUR', approver: fn?.approver || '', amount: li.contractValue ? parseFloat(li.contractValue).toFixed(2) : '', category: li.licence || '', atom: '', vendor: li.vendor || '', costCentre: li.costCentre || '', region: li.region || '', project: '', timeSensitive: false, inBudget: true, exceptional: 'No', justification: `Budget line item: ${li.licence || ''}${li.comments ? ' — ' + li.comments : ''}`, department: fn?.name || '', businessUnit: li.businessUnit || '', originInvoiceIds: [], _budgetLineId: li.id, _budgetId: sb.id }); setCurrentPage('spend-approval'); setSpendView('form'); }} className="px-1.5 py-0 rounded text-[10px] font-semibold bg-green-600 text-white hover:bg-green-700 whitespace-nowrap" title="Create Spend Approval from this line item">+ SA</button>}</span>}</div></td>
+  <td className="px-2 py-2.5"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${li.type === 'BAU' ? 'bg-blue-100 text-blue-700' : li.type === 'New' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>{li.type}</span></td>
+  <td className="px-2 py-2.5 text-right">{li.contractValue ? <span className="text-gray-800">{li.currency || 'EUR'} {parseFloat(li.contractValue).toLocaleString(undefined,{minimumFractionDigits:2})}</span> : <span className="text-gray-300">—</span>}</td>
+  <td className="px-2 py-2.5 text-right font-bold text-teal-700">€{eurA.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+  <td className="px-2 py-2.5 text-center">{monthSpark(budgetVals, 'teal')}</td>
+  <td className="px-2 py-2.5 text-right">{inv.total > 0 ? <><span className="font-semibold text-red-600">€{inv.total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span><div className={`text-xs font-medium ${pctSpent > 100 ? 'text-red-600' : pctSpent > 80 ? 'text-amber-600' : 'text-green-600'}`}>{pctSpent}% spent</div></> : <span className="text-gray-300">—</span>}</td>
+  <td className="px-2 py-2.5 text-center">{inv.total > 0 ? monthSpark(invVals, 'red') : <span className="text-gray-300 text-xs">—</span>}</td>
+  {isDraft && <td className="px-2 py-2.5 text-center" onClick={e => e.stopPropagation()}><button onClick={() => deleteBudgetLineItem(sb.id, li.id)} className="text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4"/></button></td>}
+  </tr>
+  {/* Expanded detail row */}
+  {expanded && (<tr className="border-b border-teal-200 bg-teal-50/50">
+  <td colSpan={mainColCount} className="px-4 py-4">
+  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+  {/* Left: Metadata fields */}
+  <div className="space-y-3">
+  <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wide">Details</h4>
+  <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+  <div><label className="text-xs text-gray-400">Service Category</label>{isDraft ? <select defaultValue={li.licence} onChange={e => updateLineField(li, 'licence', e.target.value)} className={`${_ic} mt-0.5`}><option value="">Select...</option>{categories.filter(c=>c.active).map(c=>(<option key={c.id} value={c.name}>{c.name}</option>))}{li.licence && !categories.find(c=>c.name===li.licence) && <option value={li.licence}>{li.licence}</option>}</select> : <div className="text-sm font-medium text-gray-800 mt-0.5">{li.licence || '—'}</div>}</div>
+  <div><label className="text-xs text-gray-400">Type</label>{isDraft ? <select defaultValue={li.type} onChange={e => updateLineField(li, 'type', e.target.value)} className={`${_ic} mt-0.5`}><option value="BAU">BAU</option><option value="New">New</option><option value="XDT">XDT</option></select> : <div className="text-sm text-gray-700 mt-0.5">{li.type}</div>}</div>
+  <div><label className="text-xs text-gray-400">Business Unit</label>{isDraft ? <select defaultValue={li.businessUnit||''} onChange={e => updateLineField(li, 'businessUnit', e.target.value || null)} className={`${_ic} mt-0.5`}><option value="">Select...</option>{businessUnits.filter(bu=>bu.active).map(bu=>(<option key={bu.id} value={bu.name}>{bu.name}</option>))}{li.businessUnit && !businessUnits.find(bu=>bu.name===li.businessUnit) && <option value={li.businessUnit}>{li.businessUnit}</option>}</select> : <div className="text-sm text-gray-700 mt-0.5">{li.businessUnit || '—'}</div>}</div>
+  <div><label className="text-xs text-gray-400">Vendor</label>{isDraft ? <input type="text" defaultValue={li.vendor||''} onBlur={e => blurText(li, 'vendor', e)} className={`${_ic} mt-0.5`} placeholder="Vendor"/> : <div className="text-sm text-gray-700 mt-0.5">{li.vendor || '—'}</div>}</div>
+  <div><label className="text-xs text-gray-400">Region</label>{isDraft ? <select defaultValue={li.region||''} onChange={e => updateLineField(li, 'region', e.target.value || null)} className={`${_ic} mt-0.5`}><option value="">Select...</option>{regions.filter(r=>r.active).map(r=>(<option key={r.id} value={r.code}>{r.code}</option>))}{li.region && !regions.find(r=>r.code===li.region) && <option value={li.region}>{li.region}</option>}</select> : <div className="text-sm text-gray-700 mt-0.5">{li.region || '—'}</div>}</div>
+  <div><label className="text-xs text-gray-400">Cost Centre</label>{isDraft ? <select defaultValue={li.costCentre||''} onChange={e => updateLineField(li, 'costCentre', e.target.value || null)} className={`${_ic} mt-0.5`}><option value="">Select...</option>{costCentres.filter(c=>c.active).map(c=>(<option key={c.id} value={c.code}>{c.code}</option>))}{li.costCentre && !costCentres.find(c=>c.code===li.costCentre) && <option value={li.costCentre}>{li.costCentre}</option>}</select> : <div className="text-sm text-gray-700 mt-0.5">{li.costCentre || '—'}</div>}</div>
+  <div><label className="text-xs text-gray-400">Currency</label>{isDraft ? <select defaultValue={li.currency||'EUR'} onChange={e => handleCurrencyChange(li, e.target.value)} className={`${_ic} mt-0.5`}><option value="EUR">EUR</option><option value="GBP">GBP</option><option value="USD">USD</option></select> : <div className="text-sm text-gray-700 mt-0.5">{li.currency || '—'}</div>}</div>
+  <div><label className="text-xs text-gray-400">Contract Value</label>{isDraft ? <input key={`cv-${li.id}-${li.contractValue}`} type="number" step="0.01" defaultValue={li.contractValue||''} onBlur={e => handleContractValueBlur(li, e)} className={`${_ic} mt-0.5`} placeholder="0.00"/> : <div className="text-sm text-gray-700 mt-0.5">{li.contractValue ? parseFloat(li.contractValue).toLocaleString(undefined,{minimumFractionDigits:2}) : '—'}</div>}</div>
+  <div><label className="text-xs text-gray-400">Contract End</label>{isDraft ? <input type="text" defaultValue={li.contractEndDate||''} onBlur={e => blurText(li, 'contractEndDate', e)} className={`${_ic} mt-0.5`} placeholder="dd/mm/yyyy"/> : <div className="text-sm text-gray-700 mt-0.5">{li.contractEndDate || '—'}</div>}</div>
+  <div><label className="text-xs text-gray-400">Linked SA</label><div className="text-sm mt-0.5">{li.spendApproval ? <span className="text-indigo-600 font-semibold">{li.spendApproval.ref}</span> : <span className="text-gray-400">—</span>}</div></div>
+  </div>
+  {/* Comments */}
+  <div className="mt-2"><label className="text-xs text-gray-400">Comments</label>
+  {isDraft ? <div className="flex items-start gap-2 mt-0.5"><span className="text-sm text-gray-600 flex-1">{li.comments || <span className="text-gray-300 italic">No comments</span>}</span><button onClick={() => { setCommentText(li.comments || ''); setCommentModal(li); }} className="text-indigo-500 hover:text-indigo-700 shrink-0"><Edit3 className="w-3.5 h-3.5"/></button></div>
+  : <div className="text-sm text-gray-600 mt-0.5">{li.comments || '—'}</div>}
+  </div>
+  </div>
+  {/* Right: Cost Booking + Monthly Grid */}
+  <div className="space-y-3">
+  {isDraft && (<div>
+  <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">Cost Booking</h4>
+  <div className="flex items-center gap-2">
+  <select value={mode} onChange={e => { const m = e.target.value; setBookingMode(li, m); if (li.contractValue) { const period = detectPeriod(li); applyBooking(li, m, m === 'single' ? { month: detectSingleMonth(li) } : m === 'period' ? period : {}); } }} className={`${_ic} text-xs max-w-[160px]`}>
+    <option value="spread">Spread (Full Year)</option>
+    <option value="single">Single Month</option>
+    <option value="period">Period</option>
+  </select>
+  {mode === 'single' && (<select value={detectSingleMonth(li)} onChange={e => { if (li.contractValue) applyBooking(li, 'single', { month: e.target.value }); }} className={`${_ic} text-xs max-w-[80px]`}>{MONTHS.map(m => <option key={m} value={m}>{m}</option>)}</select>)}
+  {mode === 'period' && (() => { const p = detectPeriod(li); return (<><select value={p.startMonth} onChange={e => { if (li.contractValue) applyBooking(li, 'period', { startMonth: e.target.value, endMonth: p.endMonth }); }} className={`${_ic} text-xs max-w-[80px]`}>{MONTHS.map(m => <option key={m} value={m}>{m}</option>)}</select><span className="text-xs text-gray-400">to</span><select value={p.endMonth} onChange={e => { if (li.contractValue) applyBooking(li, 'period', { startMonth: p.startMonth, endMonth: e.target.value }); }} className={`${_ic} text-xs max-w-[80px]`}>{MONTHS.map(m => <option key={m} value={m}>{m}</option>)}</select></>); })()}
+  </div>
+  </div>)}
+  <div>
+  <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">Monthly Breakdown</h4>
+  <div className="grid grid-cols-6 gap-1">
+  {MONTHS.map(m => { const bv = parseFloat(mb[m]) || 0; const iv = inv.monthly[m] || 0; const over = iv > 0 && bv > 0 && iv > bv; return (
+  <div key={m} className={`text-center rounded px-1 py-1.5 ${bv > 0 || iv > 0 ? 'bg-gray-50 border border-gray-200' : 'bg-gray-50 border border-gray-100'}`}>
+  <div className="text-[10px] text-gray-400 font-medium uppercase">{m}</div>
+  <div className={`text-xs font-semibold ${bv > 0 ? 'text-teal-700' : 'text-gray-300'}`}>{bv > 0 ? `€${fmtM(bv)}` : '—'}</div>
+  {iv > 0 && <div className={`text-[10px] font-semibold ${over ? 'text-red-600' : 'text-red-500'}`}>€{fmtM(iv)}</div>}
+  </div>); })}
+  </div>
+  <div className="flex items-center gap-4 mt-2 text-xs">
+  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-teal-400 inline-block"></span> Budget €{eurA.toLocaleString(undefined,{minimumFractionDigits:2})}</span>
+  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 inline-block"></span> Invoiced €{inv.total.toLocaleString(undefined,{minimumFractionDigits:2})}{eurA > 0 && <span className={`ml-1 font-semibold ${pctSpent > 100 ? 'text-red-600' : pctSpent > 80 ? 'text-amber-600' : 'text-green-600'}`}>({pctSpent}%)</span>}</span>
+  </div>
+  </div>
+  </div>
+  </div>
+  </td>
+  </tr>)}
+  </React.Fragment>);
 })}
 </React.Fragment>); })}
-{allItems.length === 0 && <tr><td colSpan={colCount} className="px-4 py-8 text-center text-gray-400">No line items yet. {isDraft ? 'Add line items or import from CSV.' : ''}</td></tr>}
-{allItems.length > 0 && filtered.length === 0 && <tr><td colSpan={colCount} className="px-4 py-6 text-center text-gray-400">No line items match your filters.</td></tr>}
+{allItems.length === 0 && <tr><td colSpan={mainColCount} className="px-4 py-8 text-center text-gray-400">No line items yet. {isDraft ? 'Add line items or import from XLSX.' : ''}</td></tr>}
+{allItems.length > 0 && filtered.length === 0 && <tr><td colSpan={mainColCount} className="px-4 py-6 text-center text-gray-400">No line items match your filters.</td></tr>}
 </tbody>
 {filtered.length > 0 && (<tfoot className="sticky bottom-0 z-10"><tr className="border-t-2 border-gray-300 font-bold bg-gray-50">
-<td className="px-2 py-3" colSpan={isDraft ? 10 : 9}>Totals{hasActiveFilters ? ` (${filtered.length} of ${allItems.length})` : ''}</td>
-{MONTHS.map(m => <td key={m} className="px-1 py-3 text-right text-teal-700">€{fmtM(filteredMonthTotals[m])}</td>)}
+<td className="px-3 py-3"></td>
+<td className="px-2 py-3" colSpan={isDraft ? 4 : 4}>Totals{hasActiveFilters ? ` (${filtered.length} of ${allItems.length})` : ` (${filtered.length} items)`}</td>
 <td className="px-2 py-3 text-right text-teal-800">€{filteredTotalEur.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-<td></td><td>{/* linked SA */}</td>{isDraft && <td></td>}</tr></tfoot>)}
+<td></td>
+{(() => { const totalInv = filtered.reduce((s, li) => s + getLineInvoiced(li).total, 0); const totalPct = filteredTotalEur > 0 ? Math.round((totalInv / filteredTotalEur) * 100) : 0; return (<><td className="px-2 py-3 text-right text-red-700">{totalInv > 0 ? <>€{totalInv.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}<div className={`text-xs font-medium ${totalPct > 100 ? 'text-red-600' : totalPct > 80 ? 'text-amber-600' : 'text-green-600'}`}>{totalPct}%</div></> : ''}</td><td></td></>); })()}
+{isDraft && <td></td>}
+</tr></tfoot>)}
 </table></div>{budgetCommentModal}</div>); })()}
+{/* Unbudgeted Approved Spend */}
+{(sb.unbudgetedSAs || []).length > 0 && (() => {
+const ubSAs = sb.unbudgetedSAs;
+const _fmtM = v => typeof v === 'number' ? v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : '0.00';
+const _MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const ubTotalEur = ubSAs.reduce((s, sa) => s + toEur(parseFloat(sa.amount), sa.currency), 0);
+const ubInvoicedEur = ubSAs.reduce((s, sa) => {
+  return s + (sa.invoices || []).reduce((is, inv) => is + toEur(parseFloat(inv.amount) + parseFloat(inv.taxAmount || 0), inv.currency), 0);
+}, 0);
+return (<div className="bg-white rounded-xl shadow-lg overflow-hidden mt-6">
+<div className="px-4 py-3 border-b border-red-200 bg-red-50">
+<div className="flex items-center justify-between">
+<div><h3 className="text-sm font-bold text-red-800 uppercase tracking-wide">Unbudgeted Approved Spend</h3>
+<p className="text-xs text-red-600 mt-0.5">Approved spend approvals not in budget — showing where inflation is coming from</p></div>
+<div className="flex items-center gap-4 text-xs">
+<span className="text-red-700 font-semibold">Approved: €{ubTotalEur.toLocaleString(undefined,{minimumFractionDigits:2})}</span>
+<span className="text-red-700 font-semibold">Invoiced: €{ubInvoicedEur.toLocaleString(undefined,{minimumFractionDigits:2})}</span>
+<span className="bg-red-200 text-red-800 px-2 py-0.5 rounded-full font-bold">{ubSAs.length} items</span>
+</div>
+</div>
+</div>
+<div className="overflow-y-auto max-h-[40vh]"><table className="w-full text-left text-sm">
+<thead className="sticky top-0 z-10"><tr className="border-b border-red-100 text-xs font-semibold text-red-600 uppercase bg-red-50/50">
+<th className="px-3 py-2">Ref</th>
+<th className="px-2 py-2">Category / Title</th>
+<th className="px-2 py-2">Vendor</th>
+<th className="px-2 py-2 text-right">Approved</th>
+<th className="px-2 py-2 text-right">Invoiced</th>
+<th className="px-2 py-2 text-center w-24">Invoiced/Mo</th>
+{isDraft && <th className="px-2 py-2 text-center w-20">Action</th>}
+</tr></thead>
+<tbody>
+{ubSAs.map(sa => {
+  const saEur = toEur(parseFloat(sa.amount), sa.currency);
+  let saInvEur = 0;
+  const invMonthly = {}; _MO.forEach(m => { invMonthly[m] = 0; });
+  (sa.invoices || []).forEach(inv => {
+    const t = toEur(parseFloat(inv.amount) + parseFloat(inv.taxAmount || 0), inv.currency);
+    saInvEur += t;
+    if (inv.monthlyCosts?.length > 0) {
+      inv.monthlyCosts.forEach(mc => { invMonthly[mc.month] = (invMonthly[mc.month] || 0) + toEur(parseFloat(mc.amount), inv.currency); });
+    } else {
+      const mIdx = inv.date ? parseInt(inv.date.slice(5, 7), 10) - 1 : -1;
+      if (mIdx >= 0 && mIdx < 12) invMonthly[_MO[mIdx]] += t;
+    }
+  });
+  const invVals = _MO.map(m => invMonthly[m]);
+  const maxV = Math.max(...invVals, 1);
+  return (<tr key={sa.id} className="border-b border-red-50 hover:bg-red-50/30">
+  <td className="px-3 py-2"><span className="text-xs font-bold text-red-700">{sa.ref}</span></td>
+  <td className="px-2 py-2"><div className="font-medium text-gray-800">{sa.category}</div><div className="text-xs text-gray-400 truncate max-w-[200px]">{sa.title}</div></td>
+  <td className="px-2 py-2 text-gray-600">{sa.vendor}</td>
+  <td className="px-2 py-2 text-right"><span className="font-semibold text-gray-800">€{saEur.toLocaleString(undefined,{minimumFractionDigits:2})}</span>{sa.currency !== 'EUR' && <div className="text-[10px] text-gray-400">{sa.currency} {parseFloat(sa.amount).toLocaleString(undefined,{minimumFractionDigits:2})}</div>}</td>
+  <td className="px-2 py-2 text-right">{saInvEur > 0 ? <span className="font-semibold text-red-600">€{saInvEur.toLocaleString(undefined,{minimumFractionDigits:2})}</span> : <span className="text-gray-300">—</span>}</td>
+  <td className="px-2 py-2 text-center">{saInvEur > 0 ? <div className="flex items-end gap-px h-4 justify-center">{invVals.map((v, i) => (<div key={i} className={`w-1.5 rounded-t ${v > 0 ? 'bg-red-400' : 'bg-gray-200'}`} style={{height:`${Math.max(v > 0 ? (v/maxV)*100 : 15, 15)}%`}} title={`${_MO[i]}: €${_fmtM(v)}`}/>))}</div> : <span className="text-gray-300 text-xs">—</span>}</td>
+  {isDraft && <td className="px-2 py-2 text-center"><button onClick={async () => {
+    try {
+      const newItem = await api.post(`/api/budgets/${sb.id}/line-items`, {
+        type: 'New', licence: sa.category, vendor: sa.vendor,
+        businessUnit: sa.businessUnit || null, costCentre: sa.costCentre || null,
+        region: sa.region || null, currency: sa.currency,
+        contractValue: parseFloat(sa.amount), eurAnnual: saEur,
+        spendApprovalId: sa.id, comments: `From unbudgeted SA ${sa.ref}`,
+      });
+      setSelectedBudget(prev => ({
+        ...prev,
+        lineItems: [...(prev.lineItems || []), newItem],
+        unbudgetedSAs: (prev.unbudgetedSAs || []).filter(s => s.id !== sa.id),
+      }));
+      refreshBudgetReport();
+    } catch (err) { alert('Failed to add: ' + err.message); }
+  }} className="text-xs px-2 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700 font-medium" title="Add as budget line item and link SA">+ Add to Budget</button></td>}
+  </tr>);
+})}
+</tbody>
+<tfoot><tr className="border-t-2 border-red-200 font-bold bg-red-50/50">
+<td className="px-3 py-2" colSpan={3}>Total Unbudgeted</td>
+<td className="px-2 py-2 text-right text-red-800">€{ubTotalEur.toLocaleString(undefined,{minimumFractionDigits:2})}</td>
+<td className="px-2 py-2 text-right text-red-800">€{ubInvoicedEur.toLocaleString(undefined,{minimumFractionDigits:2})}</td>
+<td></td>{isDraft && <td></td>}
+</tr></tfoot>
+</table></div>
+</div>);
+})()}
 {aiImport.open && (
 <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={() => !aiImport.loading && setAiImport({ open: false, loading: false, error: null, result: null, fileName: '' })}>
 <div className="bg-white rounded-xl shadow-2xl max-w-5xl w-full max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
@@ -1609,25 +1913,41 @@ return (<div className={_pg}>{showBudgetModal && (<div className="fixed inset-0 
 </div>
 {budgets.length === 0 ? (<div className="bg-white rounded-xl shadow-lg p-12 text-center"><Wallet className="w-16 h-16 text-gray-300 mx-auto mb-4"/><h3 className="text-lg font-semibold text-gray-600 mb-2">No budgets yet</h3><p className="text-gray-400 mb-6">Create your first budget to start tracking spend against plan.</p><button onClick={() => { setBudgetForm({ title: '', year: new Date().getFullYear(), functionId: '' }); setShowBudgetModal(true); }} className="px-6 py-2.5 bg-teal-600 text-white rounded-lg hover:bg-teal-700 font-semibold">Create Budget</button></div>)
 : (<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-{budgets.map(b => (<div key={b.id} className="bg-white rounded-xl shadow-lg hover:shadow-xl border-2 border-transparent hover:border-teal-300 transition cursor-pointer" onClick={() => openBudgetDetail(b)}>
-<div className="p-6">
-<div className={_fj+" mb-3"}>
+{budgets.map(b => { const pct = b.totalEurAnnual > 0 ? Math.round((b.totalSpent || 0) / b.totalEurAnnual * 100) : 0; const pctColor = pct > 100 ? 'text-red-600' : pct > 80 ? 'text-amber-600' : 'text-teal-600'; const barColor = pct > 100 ? 'bg-red-500' : pct > 80 ? 'bg-amber-500' : 'bg-teal-500'; const saCoverage = b.lineItemCount > 0 ? Math.round((b.linkedCount || 0) / b.lineItemCount * 100) : 0; return (<div key={b.id} className="bg-white rounded-xl shadow-lg hover:shadow-xl border-2 border-transparent hover:border-teal-300 transition cursor-pointer" onClick={() => openBudgetDetail(b)}>
+<div className="p-5">
+<div className={_fj+" mb-2"}>
 <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${b.status === 'Draft' ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'}`}>{b.status}</span>
 <span className="text-sm font-medium text-gray-500">{b.year}</span>
 </div>
-<h3 className="text-lg font-bold text-gray-800 mb-1">{b.title}</h3>
-<p className="text-sm text-gray-500 mb-4">{b.function?.name || '—'} — Created by {b.createdBy?.name}</p>
-<div className="grid grid-cols-3 gap-3">
-<div className="bg-gray-50 rounded-lg p-3"><p className="text-xs text-gray-500">Annual EUR</p><p className="text-lg font-bold text-teal-700">€{(b.totalEurAnnual||0).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})}</p></div>
-<div className="bg-gray-50 rounded-lg p-3"><p className="text-xs text-gray-500">Line Items</p><p className="text-lg font-bold text-gray-700">{b.lineItemCount || 0}</p></div>
-{(() => { const pct = b.totalEurAnnual > 0 ? Math.round((b.totalSpent || 0) / b.totalEurAnnual * 100) : 0; const color = pct > 100 ? 'text-red-600' : pct > 80 ? 'text-amber-600' : 'text-teal-600'; return (
-<div className="bg-gray-50 rounded-lg p-3"><p className="text-xs text-gray-500">Budget Spent</p><p className={`text-lg font-bold ${color}`}>{pct}%</p>
-<div className="w-full bg-gray-200 rounded-full h-1.5 mt-1"><div className={`h-1.5 rounded-full ${pct > 100 ? 'bg-red-500' : pct > 80 ? 'bg-amber-500' : 'bg-teal-500'}`} style={{width:`${Math.min(pct,100)}%`}}/></div></div>);})()}
+<h3 className="text-lg font-bold text-gray-800 mb-0.5">{b.title}</h3>
+<p className="text-xs text-gray-500 mb-3">{b.function?.name || '—'} — {b.createdBy?.name}</p>
+{/* Budget & Invoiced */}
+<div className="flex items-baseline justify-between mb-1">
+<span className="text-xl font-bold text-teal-700">€{(b.totalEurAnnual||0).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})}</span>
+<span className={`text-sm font-bold ${pctColor}`}>{pct}% spent</span>
 </div>
-<div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-100">
+{/* Utilisation bar */}
+<div className="w-full bg-gray-200 rounded-full h-2 mb-3">
+<div className={`h-2 rounded-full transition-all ${barColor}`} style={{width:`${Math.min(pct,100)}%`}}/>
+</div>
+{/* Metric grid */}
+<div className="grid grid-cols-4 gap-2 text-center mb-3">
+<div><p className="text-lg font-bold text-gray-700">{b.lineItemCount || 0}</p><p className="text-[10px] text-gray-400 uppercase">Items</p></div>
+<div><p className="text-lg font-bold text-red-600">€{((b.totalSpent||0)/1000).toFixed(1)}k</p><p className="text-[10px] text-gray-400 uppercase">Invoiced</p></div>
+<div><p className={`text-lg font-bold ${(b.variance||0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>{(b.variance||0) >= 0 ? '' : '-'}€{(Math.abs(b.variance||0)/1000).toFixed(1)}k</p><p className="text-[10px] text-gray-400 uppercase">Remaining</p></div>
+<div><p className={`text-lg font-bold ${saCoverage === 100 ? 'text-green-600' : saCoverage > 50 ? 'text-amber-600' : 'text-gray-500'}`}>{saCoverage}%</p><p className="text-[10px] text-gray-400 uppercase">SA Cover</p></div>
+</div>
+{/* SA link bar */}
+<div className="flex items-center gap-2 text-xs text-gray-400">
+<div className="flex-1 bg-gray-100 rounded-full h-1.5">
+<div className="h-1.5 rounded-full bg-indigo-400 transition-all" style={{width:`${saCoverage}%`}}/>
+</div>
+<span>{b.linkedCount || 0}/{b.lineItemCount || 0} linked</span>
+</div>
+<div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100">
 <span className="text-xs text-gray-400">{new Date(b.createdAt).toLocaleDateString()}{b.submittedAt ? ` — Submitted ${new Date(b.submittedAt).toLocaleDateString()}` : ''}</span>
 {b.status === 'Draft' && <button onClick={e => { e.stopPropagation(); deleteBudget(b.id); }} className="text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4"/></button>}
-</div></div></div>))}
+</div></div></div>); })}
 </div>)}
 </div></div>); }
 
@@ -1867,6 +2187,15 @@ try { await api.post('/api/budget-lines/bulk-link', { ids: pendingBudgetLineIds,
 setBudgetLines(prev => prev.map(bl => pendingBudgetLineIds.includes(bl.id) ? { ...bl, spendApprovalId: saved.id } : bl));
 } catch (e) { console.error('Failed to link budget lines:', e); }
 }
+// Auto-link budget line item if created from budget detail
+if (sf._budgetLineId && sf._budgetId) {
+try {
+  await api.patch(`/api/budgets/${sf._budgetId}/line-items/${sf._budgetLineId}`, { spendApprovalId: saved.id });
+  // Refresh budget detail so the link is visible when user navigates back
+  const refreshed = await api.get(`/api/budgets/${sf._budgetId}`);
+  setSelectedBudget(refreshed);
+} catch (e) { console.error('Failed to link budget line:', e); alert('Spend created but failed to link to budget line: ' + e.message); }
+}
 setPendingBudgetLineIds([]);
 setPendingAttachments([]);
 setSpendSubmitted(true);
@@ -1970,7 +2299,9 @@ setSpendApprovals(prev => prev.map(s => ids.includes(s.id) ? {...s, status, appr
 setSelectedSpendIds([]);};
 if (spendSubmitted) { return (<div className={_pg}><div className="w-full max-w-4xl mx-auto">{navBar}
 <div className="bg-white rounded-xl shadow-lg p-12 text-center"> <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4"/> <h2 className="text-2xl font-bold text-gray-800 mb-3">Request Submitted</h2> <p className="text-gray-500 mb-2">Your spend approval for <strong>{sf.title}</strong> has been submitted.</p> <p className="text-gray-500 mb-2">{fmtEur(sf.amount, sf.currency)} • Approver: {sf.approver}</p>{sf.currency !== 'EUR' && <p className="text-xs text-gray-400 mb-8">Original: {sf.currency} {Number(sf.amount).toLocaleString()}</p>} <div className="flex justify-center space-x-4">
-<button onClick={() => { setSpendForm({ cc:'', title:'', currency:'', approver:'', approverId:null, amount:'', category:'', atom:'', vendor:'', costCentre:'', region:'', project:'', description:'', timeSensitive:false, inBudget:false, exceptional:'', justification:'', department:'', businessUnit:'', originInvoiceIds: [] }); setPendingAttachments([]); setPendingBudgetLineIds([]); setSpendLinkBudgetId(null); setSpendSubmitted(false); }} className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold">Create Another</button> <button onClick={() => { setSpendSubmitted(false); setSpendView('list'); }} className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition font-semibold">Back to Spend Approvals</button></div></div> </div></div>);}
+<button onClick={() => { setSpendForm({ cc:'', title:'', currency:'', approver:'', approverId:null, amount:'', category:'', atom:'', vendor:'', costCentre:'', region:'', project:'', description:'', timeSensitive:false, inBudget:false, exceptional:'', justification:'', department:'', businessUnit:'', originInvoiceIds: [] }); setPendingAttachments([]); setPendingBudgetLineIds([]); setSpendLinkBudgetId(null); setSpendSubmitted(false); }} className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold">Create Another</button> <button onClick={() => { setSpendSubmitted(false); setSpendView('list'); }} className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition font-semibold">Back to Spend Approvals</button>
+{sf._budgetId && <button onClick={() => { setSpendSubmitted(false); setSpendForm({ cc:'', title:'', currency:'', approver:'', approverId:null, amount:'', category:'', atom:'', vendor:'', costCentre:'', region:'', project:'', description:'', timeSensitive:false, inBudget:false, exceptional:'', justification:'', department:'', businessUnit:'', originInvoiceIds: [] }); setBudgetView('detail'); setCurrentPage('budgets'); }} className="px-6 py-3 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition font-semibold">Back to Budget</button>}
+</div></div> </div></div>);}
 if (selectedSpend) { const s = selectedSpend;
 const sBadge2 = (status) => { const c = {Pending:'bg-yellow-100 text-yellow-800',Approved:'bg-green-100 text-green-800',Rejected:'bg-red-100 text-red-800',Escalated:'bg-orange-100 text-orange-800'}; return <span className={`px-3 py-1 rounded-full text-sm font-semibold ${c[status]||'bg-gray-100 text-gray-800'}`}>{status}</span>; };
 const dRow = (label, val) => (<div className="py-3 border-b border-gray-100 grid grid-cols-3"><span className="text-sm font-medium text-gray-500">{label}</span><span className="text-sm text-gray-900 col-span-2">{val}</span></div>);
@@ -2887,6 +3218,6 @@ title="View/Download Invoice"> <span className="underline text-xs">{invoice.file
 {canDeleteInvoices() && ( <td className="px-4 py-3 text-sm"> <button
 onClick={() => initiateDeleteInvoice(invoice)} className="flex items-center space-x-1 px-3 py-1 bg-gray-600 text-white rounded hover:bg-gray-700"
 title="Delete Invoice" > <Trash2 className="w-4 h-4"/></button></td>)}</tr> ))}</tbody></table></div></div> ))}</div>)}</div></div>
-{hoveredInvoice && (() => { const inv = invoices.find(i => i.id === hoveredInvoice.id); if (!inv || !inv.fileUrl) return null; const popTop = Math.max(8, Math.min(hoveredInvoice.top - 160, window.innerHeight - 340)); const popLeft = hoveredInvoice.left + 280 > window.innerWidth ? hoveredInvoice.left - 280 : hoveredInvoice.left; return ( <div className="fixed z-50 pointer-events-none bg-white rounded-lg shadow-2xl border-2 border-indigo-200 p-2" style={{ top: popTop, left: Math.max(8, popLeft) }}> {inv.fileType?.startsWith('image/') ? ( <img src={inv.fileUrl} alt="Invoice preview" style={{width:'256px',height:'320px',objectFit:'contain',borderRadius:'4px'}}/> ) : inv.fileType === 'application/pdf' ? ( <iframe src={inv.fileUrl} title="PDF preview" style={{width:'256px',height:'320px',border:'none',borderRadius:'4px'}}/> ) : ( <div style={{width:'256px',height:'320px',display:'flex',alignItems:'center',justifyContent:'center',background:'#f3f4f6',borderRadius:'4px'}}> <FileText style={{width:'64px',height:'64px',color:'#9ca3af'}}/></div>)}</div>); })()}
+{hoveredInvoice && (() => { const inv = invoices.find(i => i.id === hoveredInvoice.id); if (!inv || !inv.fileUrl) return null; const popTop = Math.max(8, Math.min(hoveredInvoice.top - 160, window.innerHeight - 340)); const popLeft = hoveredInvoice.left + 280 > window.innerWidth ? hoveredInvoice.left - 280 : hoveredInvoice.left; return ( <div className="fixed z-50 pointer-events-none bg-white rounded-lg shadow-2xl border-2 border-indigo-200 p-2" style={{ top: popTop, left: Math.max(8, popLeft) }}> {inv.fileType?.startsWith('image/') ? ( <img src={inv.fileUrl} alt="Invoice preview" style={{width:'256px',height:'320px',objectFit:'contain',borderRadius:'4px'}}/> ) : inv.fileType === 'application/pdf' ? ( <iframe src={inv.fileUrl} title="PDF preview" sandbox="allow-same-origin" style={{width:'256px',height:'320px',border:'none',borderRadius:'4px'}}/> ) : ( <div style={{width:'256px',height:'320px',display:'flex',alignItems:'center',justifyContent:'center',background:'#f3f4f6',borderRadius:'4px'}}> <FileText style={{width:'64px',height:'64px',color:'#9ca3af'}}/></div>)}</div>); })()}
 </div>);};
 export default InvoiceWorkflowApp;

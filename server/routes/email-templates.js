@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import prisma from '../lib/prisma.js';
 import { logAudit } from '../services/auditService.js';
+import authorize from '../middleware/authorize.js';
 
 const router = Router();
 
 // GET /api/email-templates
-router.get('/api/email-templates', async (req, res, next) => {
+router.get('/api/email-templates', authorize('settings.manage_lookups'), async (req, res, next) => {
   try {
     const templates = await prisma.emailTemplate.findMany({ orderBy: { id: 'asc' } });
     res.json(templates);
@@ -13,7 +14,7 @@ router.get('/api/email-templates', async (req, res, next) => {
 });
 
 // PATCH /api/email-templates/:id
-router.patch('/api/email-templates/:id', async (req, res, next) => {
+router.patch('/api/email-templates/:id', authorize('settings.manage_lookups'), async (req, res, next) => {
   try {
     const { name, subject, body, active } = req.body;
     const data = {};
