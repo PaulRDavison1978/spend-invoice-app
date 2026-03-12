@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import Anthropic from '@anthropic-ai/sdk';
-import XLSX from 'xlsx';
+import { readWorkbook, getSheetNames, sheetToArrays } from '../utils/excelParser.js';
 import prisma from '../lib/prisma.js';
 import { decrypt } from '../services/cryptoService.js';
 import authorize from '../middleware/authorize.js';
@@ -67,14 +67,15 @@ router.post(
 
       // Parse Excel
       const buffer = Buffer.from(file, 'base64');
-      const wb = XLSX.read(buffer, { type: 'buffer' });
+      const wb = await readWorkbook(buffer);
+      const sheetNameList = getSheetNames(wb);
 
       // Build sheet summaries for Claude
       const sheetSummaries = [];
-      for (const name of wb.SheetNames) {
-        const ws = wb.Sheets[name];
-        const rawData = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true });
-        const fmtData = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false });
+      for (const name of sheetNameList) {
+        const ws = wb.getWorksheet(name);
+        const rawData = sheetToArrays(ws, { raw: true });
+        const fmtData = sheetToArrays(ws, { raw: false });
         if (rawData.length < 2) continue;
 
         // Find the header row (first row with multiple non-empty cells)
@@ -102,9 +103,9 @@ router.post(
 
       // Now find the best sheet (most data rows) and send ALL its data to Claude
       const bestSheet = sheetSummaries.reduce((a, b) => a.dataRowCount > b.dataRowCount ? a : b);
-      const ws = wb.Sheets[bestSheet.name];
-      const rawData = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true });
-      const fmtData = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false });
+      const bestWs = wb.getWorksheet(bestSheet.name);
+      const rawData = sheetToArrays(bestWs, { raw: true });
+      const fmtData = sheetToArrays(bestWs, { raw: false });
 
       // Find header row index again
       let headerIdx = 0;

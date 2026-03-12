@@ -20,12 +20,12 @@
     "@prisma/client": "^6.4.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
     "express": "^4.21.2",
     "express-rate-limit": "^8.3.1",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
-    "jwks-rsa": "^3.1.0",
-    "xlsx": "^0.18.5"
+    "jwks-rsa": "^4.0.1"
   },
   "devDependencies": {
     "archiver": "^7.0.1",

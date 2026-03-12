@@ -3,7 +3,7 @@ import { useMsal, useIsAuthenticated } from '@azure/msal-react';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { Upload, FileText, CheckCircle, XCircle, X, Download, ExternalLink, AlertCircle, LogOut, User, Trash2, Settings, Home, DollarSign, ArrowRight, ChevronDown, ChevronUp, Lock, Plus, Shield, Mail, BarChart3, Wallet, Edit3, Send, Eye, MessageSquare, Sparkles, Loader2, Search, Filter, FileSpreadsheet } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import * as XLSX from 'xlsx';
+import { parseWorkbook } from './utils/excelParser.js';
 import { loginRequest } from './authConfig.js';
 import { api, setTokenAcquirer, setDevEmail } from './api/client.js';
 
@@ -830,14 +830,13 @@ const removeFromBatch = (idx) => { setExtractedDataBatch(prev => { const next = 
 const handleBulkFile = (e) => {
   const file = e.target.files?.[0]; if (!file) return;
   const reader = new FileReader();
-  reader.onload = (evt) => {
+  reader.onload = async (evt) => {
     try {
-      const data = new Uint8Array(evt.target.result);
-      const wb = XLSX.read(data, { type: 'array' });
-      if (wb.SheetNames.length > 1) {
-        setBulkImport({ rows: [], fileName: file.name, mappings: null, step: 'sheet', workbook: wb, sheetNames: wb.SheetNames });
+      const wb = await parseWorkbook(evt.target.result);
+      if (wb.sheetNames.length > 1) {
+        setBulkImport({ rows: [], fileName: file.name, mappings: null, step: 'sheet', workbook: wb, sheetNames: wb.sheetNames });
       } else {
-        selectBulkSheet(wb, wb.SheetNames[0], file.name);
+        selectBulkSheet(wb, wb.sheetNames[0], file.name);
       }
     } catch (err) { alert('Failed to parse file: ' + err.message); }
   };
@@ -845,8 +844,7 @@ const handleBulkFile = (e) => {
   if (bulkFileRef.current) bulkFileRef.current.value = '';
 };
 const selectBulkSheet = (wb, sheetName, fileName) => {
-  const sheet = wb.Sheets[sheetName];
-  const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  const json = wb.getJsonRows(sheetName, { defval: '' });
   if (json.length === 0) { alert('No data found in sheet "' + sheetName + '"'); return; }
   const headers = Object.keys(json[0]);
   const targetFields = ['invoiceNumber','vendor','date','dueDate','amount','taxAmount','currency','department','businessUnit','description'];
@@ -909,13 +907,13 @@ const handleSpendBulkFile = (e) => {
   const file = e.target.files?.[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = (evt) => {
+  reader.onload = async (evt) => {
     try {
-      const wb = XLSX.read(evt.target.result, { type: 'array' });
-      if (wb.SheetNames.length > 1) {
-        setSpendBulk({ rows: [], fileName: file.name, mappings: null, step: 'sheet', workbook: wb, sheetNames: wb.SheetNames });
+      const wb = await parseWorkbook(evt.target.result);
+      if (wb.sheetNames.length > 1) {
+        setSpendBulk({ rows: [], fileName: file.name, mappings: null, step: 'sheet', workbook: wb, sheetNames: wb.sheetNames });
       } else {
-        selectSpendBulkSheet(wb, wb.SheetNames[0], file.name);
+        selectSpendBulkSheet(wb, wb.sheetNames[0], file.name);
       }
     } catch (err) { alert('Failed to parse file: ' + err.message); }
   };
@@ -923,8 +921,7 @@ const handleSpendBulkFile = (e) => {
   if (spendBulkFileRef.current) spendBulkFileRef.current.value = '';
 };
 const selectSpendBulkSheet = (wb, sheetName, fileName) => {
-  const sheet = wb.Sheets[sheetName];
-  const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  const json = wb.getJsonRows(sheetName, { defval: '' });
   if (json.length === 0) { alert('No data found in sheet "' + sheetName + '"'); return; }
   const headers = Object.keys(json[0]);
   const targetFields = ['ref','title','department','businessUnit','vendor','category','currency','amount','costCentre','atom','region','project','description','status','exceptional','justification'];
@@ -1142,14 +1139,13 @@ const addBulkBudgetLines = async (budgetId, items) => {
 const handleBudgetBulkFile = (e) => {
   const file = e.target.files?.[0]; if (!file) return;
   const reader = new FileReader();
-  reader.onload = (evt) => {
+  reader.onload = async (evt) => {
     try {
-      const data = new Uint8Array(evt.target.result);
-      const wb = XLSX.read(data, { type: 'array' });
-      if (wb.SheetNames.length > 1) {
-        setBudgetBulk({ rows: [], fileName: file.name, mappings: null, step: 'sheet', workbook: wb, sheetNames: wb.SheetNames });
+      const wb = await parseWorkbook(evt.target.result);
+      if (wb.sheetNames.length > 1) {
+        setBudgetBulk({ rows: [], fileName: file.name, mappings: null, step: 'sheet', workbook: wb, sheetNames: wb.sheetNames });
       } else {
-        selectBudgetBulkSheet(wb, wb.SheetNames[0], file.name);
+        selectBudgetBulkSheet(wb, wb.sheetNames[0], file.name);
       }
     } catch (err) { alert('Failed to parse file: ' + err.message); }
   };
@@ -1157,8 +1153,7 @@ const handleBudgetBulkFile = (e) => {
   if (budgetBulkFileRef.current) budgetBulkFileRef.current.value = '';
 };
 const selectBudgetBulkSheet = (wb, sheetName, fileName) => {
-  const sheet = wb.Sheets[sheetName];
-  const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  const json = wb.getJsonRows(sheetName, { defval: '' });
   if (json.length === 0) { alert('No data found in sheet "' + sheetName + '"'); return; }
   const headers = Object.keys(json[0]);
   const targetFields = ['licence','vendor','type','businessUnit','serviceCategory','costCentre','region','currency','eurAnnual','contractValue','contractEndDate','comments','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
