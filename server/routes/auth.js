@@ -74,9 +74,9 @@ publicRouter.post('/api/auth/callback', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// Dev-only endpoints (gated by NODE_ENV)
+// Dev-only endpoints — disabled unless NODE_ENV is explicitly set to 'development'
 publicRouter.get('/api/auth/dev-users', async (req, res, next) => {
-  if (process.env.NODE_ENV === 'production') return res.status(404).json({ error: 'Not found' });
+  if (process.env.NODE_ENV !== 'development') return res.status(404).json({ error: 'Not found' });
   try {
     const users = await prisma.user.findMany({
       where: { status: 'Active' },
@@ -88,7 +88,7 @@ publicRouter.get('/api/auth/dev-users', async (req, res, next) => {
 });
 
 publicRouter.post('/api/auth/dev-login', async (req, res, next) => {
-  if (process.env.NODE_ENV === 'production') return res.status(404).json({ error: 'Not found' });
+  if (process.env.NODE_ENV !== 'development') return res.status(404).json({ error: 'Not found' });
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: 'email is required' });

@@ -39,7 +39,21 @@ app.use(helmet({
       formAction: ["'self'"],
     },
   },
+  permissionsPolicy: {
+    features: {
+      camera: [],
+      microphone: [],
+      geolocation: [],
+      payment: [],
+    },
+  },
 }));
+
+// Prevent caching of API responses containing sensitive data
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
 app.use(cors({
   origin: process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',')
@@ -49,6 +63,14 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 app.use(express.json({ limit: '10mb' }));
+
+// Catch JSON parse errors before auth to avoid leaking technology details
+app.use((err, req, res, next) => {
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'Invalid JSON in request body' });
+  }
+  next(err);
+});
 
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
