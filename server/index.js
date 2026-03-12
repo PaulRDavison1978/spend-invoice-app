@@ -39,18 +39,11 @@ app.use(helmet({
       formAction: ["'self'"],
     },
   },
-  permissionsPolicy: {
-    features: {
-      camera: [],
-      microphone: [],
-      geolocation: [],
-      payment: [],
-    },
-  },
 }));
 
-// Prevent caching of API responses containing sensitive data
+// Permissions-Policy and Cache-Control headers
 app.use((req, res, next) => {
+  res.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
   res.set('Cache-Control', 'no-store');
   next();
 });
