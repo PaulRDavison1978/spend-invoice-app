@@ -6,7 +6,7 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "start": "npx prisma migrate deploy && node index.js",
+    "start": "npx prisma migrate deploy && node prisma/seed-currencies.js && node index.js",
     "dev": "node --watch index.js",
     "seed": "node prisma/seed.js"
   },
