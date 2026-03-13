@@ -2,3 +2,7 @@ node_modules
 dist
 .env
 .env.local
+.claude/
+backend-logs.zip
+server-deploy.zip
+files/

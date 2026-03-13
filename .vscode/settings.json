@@ -1,0 +1,4 @@
+{
+    "appService.defaultWebAppToDeploy": "/subscriptions/be599ad0-4527-493a-b6de-c2468b52f410/resourceGroups/appsvc_linux_westeurope/providers/Microsoft.Web/sites/spendguard-api",
+    "appService.deploySubpath": "server"
+}
